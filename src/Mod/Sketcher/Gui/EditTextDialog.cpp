@@ -55,9 +55,6 @@ EditTextDialog::EditTextDialog(ViewProviderSketch* viewProvider, int constraintI
     // Initialize Text
     ui->lineEdit_text->setText(QString::fromStdString(constraint->getText()));
 
-    ui->radioButton_height->setChecked(constraint->getIsTextHeight());
-    ui->radioButton_width->setChecked(!constraint->getIsTextHeight());
-
     // Initialize Font
     populateFontList();
     QString currentFontName = QString::fromStdString(constraint->getFont());
@@ -99,13 +96,12 @@ void EditTextDialog::on_buttonBox_accepted()
     std::string newText = ui->lineEdit_text->text().toStdString();
     QString selectedFontName = ui->comboBox_font->currentText();
     std::string newFontPath = fontPathMap.value(selectedFontName).toStdString();
-    bool newIsHeight = ui->radioButton_height->isChecked();
 
     const Sketcher::Constraint* constraint = sketch->Constraints[constrIndex];
 
     // Check if anything changed
-    if (newText == constraint->getText() && selectedFontName.toStdString() == constraint->getFont()
-        && newIsHeight == constraint->getIsTextHeight()) {
+    if (newText == constraint->getText()
+        && selectedFontName.toStdString() == constraint->getFont()) {
         return;  // Nothing to do
     }
 
@@ -115,8 +111,11 @@ void EditTextDialog::on_buttonBox_accepted()
     );
 
     try {
-        // Find if it was construction geometry to preserve that state
-        int firstTextGeoId = constraint->getGeoId(1);
+        // Find if the glyphs were construction geometry to preserve that state.
+        // For a dual-line (v2) text the glyphs start at element index 2 (0=width,
+        // 1=height lines); a legacy single-line text has glyphs from index 1.
+        int firstGlyphIndex = constraint->getTextSchemaVersion() >= 2 ? 2 : 1;
+        int firstTextGeoId = constraint->getGeoId(firstGlyphIndex);
         bool isConstruction = false;
         if (firstTextGeoId != Sketcher::GeoEnum::GeoUndef) {
             isConstruction = Sketcher::GeometryFacade::getConstruction(
@@ -124,7 +123,8 @@ void EditTextDialog::on_buttonBox_accepted()
             );
         }
 
-        // Send the updated 5-parameter call to Python
+        // Send the updated call to Python. The isHeight boolean is legacy (it no longer
+        // selects a scaling mode); scaling is governed entirely by the constraint state.
         std::string escText = escapeForPython(newText);
         std::string escFont = escapeForPython(newFontPath);
         Gui::cmdAppObjectArgs(
@@ -133,7 +133,7 @@ void EditTextDialog::on_buttonBox_accepted()
             constrIndex,
             escText.c_str(),
             escFont.c_str(),
-            newIsHeight ? "True" : "False",
+            "False",
             isConstruction ? "True" : "False"
         );
 

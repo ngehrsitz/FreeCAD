@@ -462,6 +462,11 @@ public:
     int addConstraintCircleDiameter(Circle& c, double* diameter, int tagId = 0, bool driving = true);
     int addConstraintArcDiameter(Arc& a, double* diameter, int tagId = 0, bool driving = true);
     int addConstraintEqualLength(Line& l1, Line& l2, int tagId = 0, bool driving = true);
+    int addConstraintProportionalLength(Line& l1,
+                                        Line& l2,
+                                        double ratio,
+                                        int tagId = 0,
+                                        bool driving = true);
     int addConstraintEqualRadius(Circle& c1, Circle& c2, int tagId = 0, bool driving = true);
     int addConstraintEqualRadii(Ellipse& e1, Ellipse& e2, int tagId = 0, bool driving = true);
     int addConstraintEqualRadii(ArcOfHyperbola& a1, ArcOfHyperbola& a2, int tagId = 0, bool driving = true);

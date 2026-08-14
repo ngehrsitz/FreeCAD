@@ -182,12 +182,19 @@ int ConstraintPy::PyInit(PyObject* args, PyObject* /*kwd*/)
             constraint->setText(text_str);
             constraint->setFont(font_str);
 
-            // Check and set the optional boolean
+            // Check and set the optional boolean (legacy; no longer selects a scaling mode)
             if (py_is_height && PyBool_Check(py_is_height)) {
                 constraint->setIsTextHeight(py_is_height == Py_True);
             }
             else {
                 constraint->setIsTextHeight(true);
+            }
+
+            // A dual-line (v2) Text is created with two leading line references
+            // ([widthId, 0, heightId, 0]); a legacy single-line Text has just one.
+            // Stamp the schema so setTextAndFont/solver take the v2 (dual-line) path.
+            if (PyList_Size(py_elements_list) >= 4) {
+                constraint->setTextSchemaVersion(2);
             }
 
             return 0;  // Success!
@@ -436,6 +443,11 @@ int ConstraintPy::PyInit(PyObject* args, PyObject* /*kwd*/)
             }
             else if (strcmp("Distance", ConstraintType) == 0) {
                 constraint->Type = Distance;
+                constraint->Second = SecondIndex;
+            }
+            else if (strcmp("TextAspectRatio", ConstraintType) == 0) {
+                // ('TextAspectRatio', widthGeoId, heightGeoId, ratio)
+                constraint->Type = TextAspectRatio;
                 constraint->Second = SecondIndex;
             }
             else if (strcmp("DistanceX", ConstraintType) == 0) {
@@ -1011,6 +1023,10 @@ std::string ConstraintPy::representation() const
         case Text:
             result << "'Text'>";
             break;
+        case TextAspectRatio:
+            result << "'TextAspectRatio' (" << getConstraintPtr()->First << ","
+                   << getConstraintPtr()->Second << ")>";
+            break;
         default:
             result << "'?'>";
             break;
@@ -1086,6 +1102,9 @@ Py::String ConstraintPy::getType() const
             break;
         case Text:
             return Py::String("Text");
+            break;
+        case TextAspectRatio:
+            return Py::String("TextAspectRatio");
             break;
         default:
             return Py::String("Undefined");

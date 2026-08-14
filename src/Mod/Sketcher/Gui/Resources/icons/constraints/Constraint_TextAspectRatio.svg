@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="64px"
+   height="64px"
+   viewBox="0 0 64 64"
+   version="1.1"
+   id="svg_textaspect"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <metadata
+     id="metadata_textaspect">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:format>image/svg+xml</dc:format>
+        <dc:type
+           rdf:resource="http://purl.org/dc/dcmitype/StillImage" />
+        <dc:publisher>
+          <cc:Agent>
+            <dc:title>FreeCAD</dc:title>
+          </cc:Agent>
+        </dc:publisher>
+        <dc:identifier>FreeCAD/src/Mod/Sketcher/Gui/Resources/icons/constraints/Constraint_TextAspectRatio.svg</dc:identifier>
+        <dc:rights>
+          <cc:Agent>
+            <dc:title>FreeCAD LGPL2+</dc:title>
+          </cc:Agent>
+        </dc:rights>
+        <cc:license>https://www.gnu.org/copyleft/lesser.html</cc:license>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <g id="layer1">
+    <!-- The text box: two perpendicular construction lines held at a fixed ratio -->
+    <rect
+       style="fill:none;stroke:#5599ff;stroke-width:2;stroke-linejoin:round;stroke-dasharray:4,3;stroke-opacity:1"
+       x="10"
+       y="16"
+       width="44"
+       height="32"
+       rx="0"
+       ry="0" />
+    <!-- Diagonal indicating the locked width:height proportion -->
+    <path
+       style="fill:none;stroke:#cc0000;stroke-width:2.5;stroke-linecap:round;stroke-opacity:1"
+       d="M 10,48 54,16" />
+    <!-- Stylized 'A' marking this as a text constraint -->
+    <path
+       style="fill:none;stroke:#280000;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1"
+       d="M 20,44 27,22 34,44 M 22.2,37 h 9.6" />
+  </g>
+</svg>

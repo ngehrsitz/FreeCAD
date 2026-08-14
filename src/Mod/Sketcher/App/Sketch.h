@@ -473,6 +473,8 @@ public:
     );
     /// add an equal length or radius constraints between two lines or between circles and arcs
     int addEqualConstraint(int geoId1, int geoId2);
+    /// add a proportional length constraint between two lines: |line2| = ratio * |line1|
+    int addProportionalLengthConstraint(int geoId1, int geoId2, double ratio);
     /// add a point on line constraint
     int addPointOnObjectConstraint(int geoId1, PointPos pos1, int geoId2, bool driving = true);
     /// add a point on B-spline constraint: needs a parameter

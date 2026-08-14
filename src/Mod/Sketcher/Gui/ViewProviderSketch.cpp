@@ -5342,6 +5342,7 @@ void ViewProviderSketch::generateContextMenu()
     int selectedBsplineKnots = 0;
     int selectedOrigin = 0;
     int selectedEndPoints = 0;
+    int selectedTexts = 0;
     bool onlyOrigin = false;
 
     Gui::MenuItem menu;
@@ -5373,6 +5374,13 @@ void ViewProviderSketch::generateContextMenu()
                         else {
                             ++selectedConics;
                         }
+                    }
+
+                    // The width/height construction lines and the glyphs of a Sketcher text
+                    // all report their owning Text constraint; count the selection as a text
+                    // so the aspect-ratio lock toggle can be offered.
+                    if (geoId >= 0 && obj->getTextConstraintIndex(geoId) >= 0) {
+                        ++selectedTexts;
                     }
                 }
                 else if (name.substr(0, 4) == "Vert") {
@@ -5530,6 +5538,10 @@ void ViewProviderSketch::generateContextMenu()
                  << "Sketcher_SelectElementsAssociatedWithConstraints"
                  << "Separator"
                  << "Std_Delete";
+        }
+        // offer the text aspect-ratio lock toggle whenever a Sketcher text is selected
+        if (selectedTexts > 0) {
+            menu << "Sketcher_ConstrainTextAspectRatio";
         }
         // add the rest of the context menu if geometry is selected
         if (selectedPoints != 0 || selectedEdges != 0) {

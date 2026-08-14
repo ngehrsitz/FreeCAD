@@ -2288,6 +2288,7 @@ bool SketchObject::evaluateConstraint(const Constraint* constraint) const
             break;
         case Tangent:
         case Group:
+        case TextAspectRatio:
             requireSecond = true;
             break;
         case Symmetric:

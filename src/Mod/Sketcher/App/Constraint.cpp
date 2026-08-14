@@ -699,3 +699,63 @@ void Constraint::setIsTextHeight(bool isHeight)
     j["isTextHeight"] = isHeight;
     MetaData = j.dump();
 }
+
+int Constraint::getTextSchemaVersion() const
+{
+    if (MetaData.empty()) {
+        return 1;  // Legacy single-line text predates the schema marker
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        if (j.contains("schema")) {
+            return j["schema"].get<int>();
+        }
+    }
+    catch (...) {
+    }
+    return 1;  // Legacy single-line text predates the schema marker
+}
+
+void Constraint::setTextSchemaVersion(int version)
+{
+    nlohmann::json j;
+    if (!MetaData.empty()) {
+        try {
+            j = nlohmann::json::parse(MetaData);
+        }
+        catch (...) {
+        }
+    }
+    j["schema"] = version;
+    MetaData = j.dump();
+}
+
+double Constraint::getTextAspect() const
+{
+    if (MetaData.empty()) {
+        return 0.0;
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        if (j.contains("aspect")) {
+            return j["aspect"].get<double>();
+        }
+    }
+    catch (...) {
+    }
+    return 0.0;
+}
+
+void Constraint::setTextAspect(double aspect)
+{
+    nlohmann::json j;
+    if (!MetaData.empty()) {
+        try {
+            j = nlohmann::json::parse(MetaData);
+        }
+        catch (...) {
+        }
+    }
+    j["aspect"] = aspect;
+    MetaData = j.dump();
+}

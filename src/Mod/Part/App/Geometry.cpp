@@ -32,6 +32,7 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepLib.hxx>
 #include <BSplCLib.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -98,6 +99,7 @@
 #include <gp_Sphere.hxx>
 #include <gp_Torus.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_GTrsf.hxx>
 #include <gp_Vec.hxx>
 #include <LProp_NotDefined.hxx>
 #include <Precision.hxx>
@@ -7495,6 +7497,89 @@ int cubic_cb(const FT_Vector* pt0, const FT_Vector* pt1, const FT_Vector* pt2, v
  * @param height            If true, the distance p1-p2 defines the height.
  *                          If false, it defines the width.
  */
+bool measureTextShapesBoundingBox(
+    const std::vector<TopoDS_Shape>& shapes,
+    double& width,
+    double& height
+)
+{
+    if (shapes.empty()) {
+        return false;
+    }
+
+    Bnd_Box bndBox;
+    for (const auto& shape : shapes) {
+        if (!shape.IsNull()) {
+            BRepBndLib::Add(shape, bndBox);
+        }
+    }
+
+    if (bndBox.IsVoid()) {
+        return false;
+    }
+
+    Standard_Real xmin, ymin, zmin, xmax, ymax, zmax;
+    bndBox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    width = xmax - xmin;
+    height = ymax - ymin;
+
+    return width > Precision::Confusion() && height > Precision::Confusion();
+}
+
+// Explore the edges of an already-transformed shape and append them to `geos` as
+// Part geometry. Shared by the uniform and non-uniform text conversion overloads.
+static void convertTransformedEdgesToGeometry(
+    const TopoDS_Shape& transformedShape,
+    std::vector<std::unique_ptr<Part::Geometry>>& geos
+)
+{
+    for (TopExp_Explorer explorer(transformedShape, TopAbs_EDGE); explorer.More();
+         explorer.Next()) {
+        Standard_Real first, last;
+        const TopoDS_Edge& edge = TopoDS::Edge(explorer.Current());
+        Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+        if (curve.IsNull()) {
+            continue;
+        }
+
+        std::unique_ptr<Part::GeomCurve> newGeo;
+
+        if (BRep_Tool::IsClosed(edge)) {
+            newGeo = Part::makeFromCurve(curve);
+        }
+        else {
+            if (curve->IsKind(STANDARD_TYPE(Geom_TrimmedCurve))) {
+                Handle(Geom_TrimmedCurve) trc = Handle(Geom_TrimmedCurve)::DownCast(curve);
+                curve = trc->BasisCurve();
+            }
+
+            if (curve->IsKind(STANDARD_TYPE(Geom_BezierCurve))) {
+                Handle(Geom_TrimmedCurve)
+                    tcurve = new Geom_TrimmedCurve(curve, first, last, true, false);
+                Part::GeomTrimmedCurve geomcurve(tcurve);
+                newGeo.reset(geomcurve.toBSpline(first, last));
+            }
+            else {
+                newGeo = Part::makeFromTrimmedCurve(curve, first, last);
+            }
+        }
+
+        if (!newGeo) {
+            Base::Console().warning(
+                "transformAndConvertToGeometry: Could not create geometry from curve.\n"
+            );
+            continue;
+        }
+
+        try {
+            geos.emplace_back(std::move(newGeo));
+        }
+        catch (const Base::Exception& e) {
+            Base::Console().warning("BSpline conversion failed: %s\n", e.what());
+        }
+    }
+}
+
 void transformAndConvertToGeometry(
     std::vector<std::unique_ptr<Part::Geometry>>& geos,
     const std::vector<TopoDS_Shape>& baseShapes,
@@ -7573,51 +7658,91 @@ void transformAndConvertToGeometry(
             continue;
         }
 
-        for (TopExp_Explorer explorer(performer.Shape(), TopAbs_EDGE); explorer.More();
-             explorer.Next()) {
-            Standard_Real first, last;
-            const TopoDS_Edge& edge = TopoDS::Edge(explorer.Current());
-            Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
-            if (curve.IsNull()) {
-                continue;
-            }
+        convertTransformedEdgesToGeometry(performer.Shape(), geos);
+    }
+}
 
-            std::unique_ptr<Part::GeomCurve> newGeo;
+// Non-uniform variant: stretch the glyphs so their bounding box exactly fills
+// widthLength x heightLength, independently on each axis. Used when both of a
+// text's construction lines are driven to a non-proportional pair (deliberate
+// single-axis distortion). `p1`/`p2` are the width line's start/end (they set the
+// anchor and the baseline rotation); `heightLength` is the length of the
+// perpendicular height line. The +Y local axis maps to the +90 deg perpendicular
+// direction, matching how the height line is created/migrated.
+void transformAndConvertToGeometryNonUniform(
+    std::vector<std::unique_ptr<Part::Geometry>>& geos,
+    const std::vector<TopoDS_Shape>& baseShapes,
+    const Base::Vector3d& p1,
+    const Base::Vector3d& p2,
+    double heightLength
+)
+{
+    if (baseShapes.empty()) {
+        return;
+    }
 
-            if (BRep_Tool::IsClosed(edge)) {
-                newGeo = Part::makeFromCurve(curve);
-            }
-            else {
-                if (curve->IsKind(STANDARD_TYPE(Geom_TrimmedCurve))) {
-                    Handle(Geom_TrimmedCurve) trc = Handle(Geom_TrimmedCurve)::DownCast(curve);
-                    curve = trc->BasisCurve();
-                }
+    Base::Vector3d dir = p2 - p1;
+    double widthLength = dir.Length();
+    if (widthLength < Precision::Confusion() || heightLength < Precision::Confusion()) {
+        return;
+    }
 
-                if (curve->IsKind(STANDARD_TYPE(Geom_BezierCurve))) {
-                    Handle(Geom_TrimmedCurve)
-                        tcurve = new Geom_TrimmedCurve(curve, first, last, true, false);
-                    Part::GeomTrimmedCurve geomcurve(tcurve);
-                    newGeo.reset(geomcurve.toBSpline(first, last));
-                }
-                else {
-                    newGeo = Part::makeFromTrimmedCurve(curve, first, last);
-                }
-            }
-
-            if (!newGeo) {
-                Base::Console().warning(
-                    "transformAndConvertToGeometry: Could not create geometry from curve.\n"
-                );
-                continue;
-            }
-
-            try {
-                geos.emplace_back(std::move(newGeo));
-            }
-            catch (const Base::Exception& e) {
-                Base::Console().warning("BSpline conversion failed: %s\n", e.what());
-            }
+    // 1. Bounding box of the base shapes
+    Bnd_Box bndBox;
+    for (const auto& shape : baseShapes) {
+        if (!shape.IsNull()) {
+            BRepBndLib::Add(shape, bndBox);
         }
+    }
+
+    if (bndBox.IsVoid()) {
+        Base::Console().warning(
+            "transformAndConvertToGeometryNonUniform: Could not determine bounds of generated "
+            "geometry.\n"
+        );
+        return;
+    }
+
+    Standard_Real xmin, ymin, zmin, xmax, ymax, zmax;
+    bndBox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    double baseWidth = xmax - xmin;
+    double baseHeight = ymax - ymin;
+
+    if (baseWidth < Precision::Confusion() || baseHeight < Precision::Confusion()) {
+        return;
+    }
+
+    double scaleX = widthLength / baseWidth;
+    double scaleY = heightLength / baseHeight;
+    double angle = std::atan2(dir.y, dir.x);
+
+    // 2. Compose: move bottom-left to origin, non-uniform scale, rotate, translate to anchor.
+    gp_Trsf initialTranslate;
+    initialTranslate.SetTranslation(gp_Vec(-xmin, -ymin, 0.0));
+
+    gp_GTrsf scaleG;  // identity by default; set the diagonal for a per-axis scale
+    scaleG.SetValue(1, 1, scaleX);
+    scaleG.SetValue(2, 2, scaleY);
+    scaleG.SetValue(3, 3, 1.0);
+
+    gp_Trsf rotateTrsf;
+    rotateTrsf.SetRotation(gp::XOY().Axis(), angle);
+
+    gp_Trsf finalTranslate;
+    finalTranslate.SetTranslation(gp_Vec(p1.x, p1.y, 0.0));
+
+    // gp_GTrsf composes on the left with gp_Trsf via its (gp_Trsf) constructor.
+    gp_GTrsf finalGTrsf = gp_GTrsf(finalTranslate) * gp_GTrsf(rotateTrsf) * scaleG
+        * gp_GTrsf(initialTranslate);
+
+    // 3. Apply the affine transform and convert to Sketcher geometry.
+    for (const auto& shape : baseShapes) {
+        BRepBuilderAPI_GTransform performer(shape, finalGTrsf, true);
+        if (!performer.IsDone()) {
+            continue;
+        }
+
+        convertTransformedEdgesToGeometry(performer.Shape(), geos);
     }
 }
 

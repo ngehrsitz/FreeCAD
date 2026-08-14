@@ -707,76 +707,191 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
         return -1;
     }
 
-    // First we replace the old geometries by the new text.
     const std::string oldText = constr->getText();
     const std::string oldFont = constr->getFont();
     const bool oldIsHeight = constr->getIsTextHeight();
-    int handleGeoId = constr->getGeoId(0);
-    int firstTextGeoId = constr->getGeoId(1);
-    bool hasExistingText = firstTextGeoId != GeoEnum::GeoUndef;
-    bool handleLast = handleGeoId > firstTextGeoId;
 
+    if (!isDualLineText(constr)) {
+        // Legacy single-line (schema < 2) text: preserve the original single-handle behaviour.
+        // Post-restore all persisted text is migrated to v2; this branch only defends against a
+        // not-yet-normalized text (e.g. freshly created directly from Python).
+        int handleGeoId = constr->getGeoId(0);
+        int firstTextGeoId = constr->getGeoId(1);
+        bool hasExistingText = firstTextGeoId != GeoEnum::GeoUndef;
+        bool handleLast = handleGeoId > firstTextGeoId;
+
+        if (hasExistingText) {
+            auto* geo1 = getGeometry(firstTextGeoId);
+            isConstruction = GeometryFacade::getConstruction(geo1);
+
+            std::vector<int> geoIdsToDelete;
+            for (int i = 1; constr->hasElement(i); ++i) {
+                if (constr->getGeoId(i) == GeoEnum::GeoUndef) {
+                    continue;
+                }
+                geoIdsToDelete.push_back(constr->getGeoId(i));
+                if (handleLast) {
+                    --handleGeoId;
+                }
+            }
+            delGeometries(geoIdsToDelete);
+        }
+
+        auto* line = dynamic_cast<const Part::GeomLineSegment*>(getGeometry(handleGeoId));
+        if (!line) {
+            return -1;
+        }
+
+        std::vector<std::unique_ptr<Part::Geometry>> newGeos;
+        std::vector<TopoDS_Shape> shapes = Part::makeTextWires(newText, newFont);
+        Part::transformAndConvertToGeometry(newGeos,
+                                            shapes,
+                                            line->getStartPoint(),
+                                            line->getEndPoint(),
+                                            isHeight);
+
+        int lastGeoid = getHighestCurveIndex();
+        std::vector<Part::Geometry*> newGeosRawPtrs;
+        newGeosRawPtrs.reserve(newGeos.size());
+        for (auto& geo_ptr : newGeos) {
+            if (isConstruction) {
+                Sketcher::GeometryFacade::setConstruction(geo_ptr.get(), isConstruction);
+            }
+            newGeosRawPtrs.push_back(geo_ptr.get());
+            geo_ptr.release();
+        }
+        newGeos.clear();
+        addGeometry(newGeosRawPtrs);
+        int newLastGeoid = getHighestCurveIndex();
+
+        if (hasExistingText) {
+            constr = new Constraint();
+            constr->Type = Text;
+            constr->truncateElements(0);
+            constr->addElement(GeoElementId(handleGeoId));
+        }
+        for (int i = lastGeoid + 1; i <= newLastGeoid; ++i) {
+            constr->addElement(GeoElementId(i));
+        }
+        constr->setText(newText);
+        constr->setFont(newFont);
+        constr->setIsTextHeight(isHeight);
+
+        if (hasExistingText) {
+            addConstraint(constr);
+        }
+
+        int err = solve();
+        if (err) {
+            constr->setText(oldText);
+            constr->setFont(oldFont);
+            constr->setIsTextHeight(oldIsHeight);
+        }
+        return err;
+    }
+
+    // ---- v2 dual-line layout: element[0] = width line, [1] = height line, [2..] = glyphs ----
+    const int memberStart = firstTextMemberIndex(constr);  // == 2
+
+    int widthGeoId = constr->getGeoId(0);
+    int heightGeoId = constr->getGeoId(1);
+
+    // Capture the handle-line geometry BEFORE any deletion (geoIds may shift afterwards).
+    auto* widthLine = dynamic_cast<const Part::GeomLineSegment*>(getGeometry(widthGeoId));
+    auto* heightLine = dynamic_cast<const Part::GeomLineSegment*>(getGeometry(heightGeoId));
+    if (!widthLine || !heightLine) {
+        return -1;
+    }
+    Base::Vector3d wStart = widthLine->getStartPoint();
+    Base::Vector3d wEnd = widthLine->getEndPoint();
+    double widthLength = (wEnd - wStart).Length();
+    double heightLength = (heightLine->getEndPoint() - heightLine->getStartPoint()).Length();
+
+    // Both lines' lengths driven -> the text fills a fixed width x height box. A lock keeps the
+    // two lengths proportional, so a locked text is never stretched.
+    bool bothDriven = isLineLengthDriven(widthGeoId) && isLineLengthDriven(heightGeoId);
+    bool hasLock = findTextAspectLock(widthGeoId, heightGeoId) >= 0;
+
+    int firstTextGeoId = constr->getGeoId(memberStart);
+    bool hasExistingText = firstTextGeoId != GeoEnum::GeoUndef;
     if (hasExistingText) {
-        // Check if text is construction or normal geos
         auto* geo1 = getGeometry(firstTextGeoId);
         isConstruction = GeometryFacade::getConstruction(geo1);
+    }
 
-        // Delete all the old text geos. Not the handle!
-        std::vector<int> geoIdsToDelete;
-        for (int i = 1; constr->hasElement(i); ++i) {
+    // Delete old glyphs (indices >= memberStart). This also removes the old Text constraint.
+    std::vector<int> geoIdsToDelete;
+    if (hasExistingText) {
+        for (int i = memberStart; constr->hasElement(i); ++i) {
             if (constr->getGeoId(i) == GeoEnum::GeoUndef) {
                 continue;
             }
             geoIdsToDelete.push_back(constr->getGeoId(i));
-            if (handleLast) {
-                --handleGeoId; // handle line is added after all text geos.
-            }
         }
-
         delGeometries(geoIdsToDelete);
     }
 
-    auto* line = dynamic_cast<const Part::GeomLineSegment*>(getGeometry(handleGeoId));
-    if (!line) {
-        return -1;
+    // Adjust the handle geoIds for the deletion-induced index shift (a migrated text can have its
+    // synthesized height line at a higher geoId than the glyphs).
+    auto adjustForDeletion = [&](int gid) {
+        int shift = 0;
+        for (int d : geoIdsToDelete) {
+            if (d < gid) {
+                ++shift;
+            }
+        }
+        return gid - shift;
+    };
+    widthGeoId = adjustForDeletion(widthGeoId);
+    heightGeoId = adjustForDeletion(heightGeoId);
+
+    // Generate the glyph shapes for the new text/font and measure their natural bounding box.
+    std::vector<TopoDS_Shape> shapes = Part::makeTextWires(newText, newFont);
+    double baseWidth = 0.0;
+    double baseHeight = 0.0;
+    Part::measureTextShapesBoundingBox(shapes, baseWidth, baseHeight);
+    double aspect = (baseWidth > Precision::Confusion()) ? (baseHeight / baseWidth) : 0.0;
+
+    // Emergent stretch: only when both lengths are driven, no lock keeps them proportional, and
+    // the current (Lw, Lh) is non-proportional to the glyphs' natural aspect.
+    bool stretch = false;
+    if (bothDriven && !hasLock && aspect > 0.0 && widthLength > Precision::Confusion()) {
+        double tol = 1e-6 * std::max(1.0, widthLength);
+        stretch = std::fabs(heightLength - aspect * widthLength) > tol;
     }
 
-    // Generate text geos based on new text/font :
     std::vector<std::unique_ptr<Part::Geometry>> newGeos;
-    std::vector<TopoDS_Shape> shapes = Part::makeTextWires(newText, newFont);
-    Part::transformAndConvertToGeometry(newGeos,
-                                    shapes,
-                                    line->getStartPoint(),
-                                    line->getEndPoint(),
-                                    isHeight);
+    if (stretch) {
+        Part::transformAndConvertToGeometryNonUniform(newGeos, shapes, wStart, wEnd, heightLength);
+    }
+    else {
+        // Uniform: scale to the width line (isHeight = false). With proportional lengths the glyphs
+        // exactly fill both the width and the height line.
+        Part::transformAndConvertToGeometry(newGeos, shapes, wStart, wEnd, /*isHeight*/ false);
+    }
 
-    // Add the geometries to sketch
+    // Add the glyph geometries to the sketch.
     int lastGeoid = getHighestCurveIndex();
     std::vector<Part::Geometry*> newGeosRawPtrs;
     newGeosRawPtrs.reserve(newGeos.size());
-
-    // Populate the raw pointer vector and release ownership from the unique_ptrs.
     for (auto& geo_ptr : newGeos) {
         if (isConstruction) {
             Sketcher::GeometryFacade::setConstruction(geo_ptr.get(), isConstruction);
         }
-        // Add the raw pointer to the new vector.
         newGeosRawPtrs.push_back(geo_ptr.get());
-        // Release ownership from the unique_ptr. The SketchObject will now manage this memory.
         geo_ptr.release();
     }
     newGeos.clear();
     addGeometry(newGeosRawPtrs);
-
     int newLastGeoid = getHighestCurveIndex();
 
-    // If there was text geos, they were deleted, which deleted the text constraint.
-    // In this case create a new constraint to replace it.
+    // Rebuild the Text constraint (the old one was removed together with the glyphs).
     if (hasExistingText) {
         constr = new Constraint();
         constr->Type = Text;
-        constr->truncateElements(0); // remove the First/Second/Third that are created automatically
-        constr->addElement(GeoElementId(handleGeoId));
+        constr->truncateElements(0);
+        constr->addElement(GeoElementId(widthGeoId));
+        constr->addElement(GeoElementId(heightGeoId));
     }
     for (int i = lastGeoid + 1; i <= newLastGeoid; ++i) {
         constr->addElement(GeoElementId(i));
@@ -784,19 +899,30 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
     constr->setText(newText);
     constr->setFont(newFont);
     constr->setIsTextHeight(isHeight);
+    constr->setTextSchemaVersion(2);
+    constr->setTextAspect(aspect);
 
     if (hasExistingText) {
         addConstraint(constr);
     }
 
-    int err = solve();
+    // Refresh the aspect-ratio lock (k = baseHeight / baseWidth) if one exists, so that locked
+    // text stays undistorted after a string/font change. Never resurrect a lock the user deleted.
+    if (aspect > 0.0) {
+        int lockIdx = findTextAspectLock(widthGeoId, heightGeoId);
+        if (lockIdx >= 0) {
+            // In-place mutation is re-read by the next solve()/setUpSketch (same pattern the
+            // error-rollback below uses on the Text constraint).
+            this->Constraints.getValues()[lockIdx]->setValue(aspect);
+        }
+    }
 
+    int err = solve();
     if (err) {
         constr->setText(oldText);
         constr->setFont(oldFont);
         constr->setIsTextHeight(oldIsHeight);
     }
-
     return err;
 }
 
@@ -833,8 +959,9 @@ bool SketchObject::isInGroup(int geoId, bool includeHandle) const
 
     for (const auto& constr : vals) {
         if (constr->Type == Group || constr->Type == Text) {
-            // First is the group construction line. We include it or not in our search.
-            int iStart = includeHandle ? 0 : 1;
+            // Indices [0, firstTextMemberIndex) are handle lines (one for Group, two for a v2
+            // dual-line Text). We include those handle lines or not in our search.
+            int iStart = includeHandle ? 0 : firstTextMemberIndex(constr);
             for (int i = iStart; constr->hasElement(i); ++i) {
                 if (constr->getGeoId(i) == geoId) {
                     return true;
@@ -851,8 +978,12 @@ bool SketchObject::isGroupHandle(int geoId) const
 
     for (const auto& constr : vals) {
         if (constr->Type == Group || constr->Type == Text) {
-            if (constr->getGeoId(0) == geoId) {
-                return true;
+            // Any of the leading handle lines counts as a handle (two for a v2 dual-line Text).
+            int nHandles = firstTextMemberIndex(constr);
+            for (int i = 0; i < nHandles && constr->hasElement(i); ++i) {
+                if (constr->getGeoId(i) == geoId) {
+                    return true;
+                }
             }
         }
     }
@@ -865,13 +996,10 @@ int SketchObject::getGroupHandleIfInGroup(int geoId)
 
     for (const auto& constr : vals) {
         if (constr->Type == Group || constr->Type == Text) {
-            // First is the group construction line.
-            int groupHandleGeoId = -1;
-            for (int i = 0; constr->hasElement(i); ++i) {
-                if (i == 0) {
-                    groupHandleGeoId = constr->getGeoId(i);
-                }
-                else if (constr->getGeoId(i) == geoId) {
+            // The representative handle is always element 0.
+            int groupHandleGeoId = constr->hasElement(0) ? constr->getGeoId(0) : -1;
+            for (int i = firstTextMemberIndex(constr); constr->hasElement(i); ++i) {
+                if (constr->getGeoId(i) == geoId) {
                     return groupHandleGeoId;
                 }
             }
@@ -887,13 +1015,166 @@ std::set<int> SketchObject::getGroupGeometries(int handleGeoId) const
     for (const auto& constr : vals) {
         if (constr->Type == Group || constr->Type == Text) {
             if (constr->getGeoId(0) == handleGeoId) {
-                for (int i = 1; constr->hasElement(i); ++i) {
+                for (int i = firstTextMemberIndex(constr); constr->hasElement(i); ++i) {
                     geoIds.insert(constr->getElement(i).GeoId);
                 }
             }
         }
     }
     return geoIds;
+}
+
+bool SketchObject::isDualLineText(const Constraint* constr)
+{
+    return constr && constr->Type == Text && constr->getTextSchemaVersion() >= 2;
+}
+
+int SketchObject::firstTextMemberIndex(const Constraint* constr)
+{
+    return isDualLineText(constr) ? 2 : 1;
+}
+
+double SketchObject::getLineLength(int geoId) const
+{
+    auto* line = dynamic_cast<const Part::GeomLineSegment*>(getGeometry(geoId));
+    if (!line) {
+        return 0.0;
+    }
+    return (line->getEndPoint() - line->getStartPoint()).Length();
+}
+
+bool SketchObject::isLineLengthDriven(int geoId) const
+{
+    if (geoId == GeoEnum::GeoUndef) {
+        return false;
+    }
+
+    const std::vector<Sketcher::Constraint*>& vals = Constraints.getValues();
+    for (const auto* c : vals) {
+        if (!c->isDriving || !c->isActive) {
+            continue;
+        }
+        switch (c->Type) {
+            case Block:
+                if (c->First == geoId) {
+                    return true;
+                }
+                break;
+            case Equal:
+            case TextAspectRatio:
+                // A length coupling to another (driven) line fixes this line's length too.
+                if (c->First == geoId || c->Second == geoId) {
+                    return true;
+                }
+                break;
+            case Distance:
+                // Edge-length form: Distance on a single line's geoId.
+                if (c->First == geoId && c->FirstPos == PointPos::none
+                    && c->Second == GeoEnum::GeoUndef) {
+                    return true;
+                }
+                // Endpoint-to-endpoint on the same line.
+                if (c->First == geoId && c->Second == geoId
+                    && c->FirstPos != PointPos::none && c->SecondPos != PointPos::none) {
+                    return true;
+                }
+                break;
+            case DistanceX:
+            case DistanceY:
+                if (c->First == geoId && c->Second == geoId
+                    && c->FirstPos != PointPos::none && c->SecondPos != PointPos::none) {
+                    return true;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
+int SketchObject::findTextAspectLock(int widthGeoId, int heightGeoId) const
+{
+    if (widthGeoId == GeoEnum::GeoUndef || heightGeoId == GeoEnum::GeoUndef) {
+        return -1;
+    }
+    const std::vector<Sketcher::Constraint*>& vals = Constraints.getValues();
+    for (int i = 0; i < int(vals.size()); ++i) {
+        const auto* c = vals[i];
+        if (c->Type == TextAspectRatio
+            && ((c->First == widthGeoId && c->Second == heightGeoId)
+                || (c->First == heightGeoId && c->Second == widthGeoId))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool SketchObject::textShouldStretch(const Constraint* textConstr) const
+{
+    if (!isDualLineText(textConstr)) {
+        return false;
+    }
+
+    int widthGeoId = textConstr->getGeoId(0);
+    int heightGeoId = textConstr->getGeoId(1);
+    if (widthGeoId == GeoEnum::GeoUndef || heightGeoId == GeoEnum::GeoUndef) {
+        return false;
+    }
+
+    // Both construction lines must be length-driven for the text to fill a fixed width x height.
+    if (!isLineLengthDriven(widthGeoId) || !isLineLengthDriven(heightGeoId)) {
+        return false;
+    }
+
+    double lw = getLineLength(widthGeoId);
+    double lh = getLineLength(heightGeoId);
+    if (lw < Precision::Confusion() || lh < Precision::Confusion()) {
+        return false;
+    }
+
+    // Stretch only when the driven pair is non-proportional to the glyphs' natural aspect. With a
+    // TextAspectRatio lock present, lh = k*lw with k == aspect, so this stays uniform.
+    double aspect = textConstr->getTextAspect();  // baseHeight / baseWidth
+    if (aspect <= 0.0) {
+        // Natural aspect unknown: both lines driven -> fill them (stretch).
+        return true;
+    }
+    double tol = 1e-6 * std::max(1.0, lw);
+    return std::fabs(lh - aspect * lw) > tol;
+}
+
+int SketchObject::getTextConstraintIndex(int geoId) const
+{
+    if (geoId == GeoEnum::GeoUndef) {
+        return -1;
+    }
+    const std::vector<Sketcher::Constraint*>& vals = Constraints.getValues();
+    for (int i = 0; i < int(vals.size()); ++i) {
+        const auto* c = vals[i];
+        if (!isDualLineText(c)) {
+            continue;
+        }
+        for (int e = 0; c->hasElement(e); ++e) {
+            if (c->getGeoId(e) == geoId) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+int SketchObject::getTextAspectLockIndex(int textConstrIndex) const
+{
+    const std::vector<Sketcher::Constraint*>& vals = Constraints.getValues();
+    if (textConstrIndex < 0 || textConstrIndex >= int(vals.size())) {
+        return -1;
+    }
+    const auto* c = vals[textConstrIndex];
+    if (!isDualLineText(c)) {
+        return -1;
+    }
+    return findTextAspectLock(c->getGeoId(0), c->getGeoId(1));
 }
 
 PyObject* SketchObject::getPyObject()
@@ -1401,6 +1682,10 @@ void SketchObject::onSketchRestore()
         // before it is rebuilt or accepted.
         migrateConstraintOrientations();
 
+        // Upgrade legacy single-line texts to the dual-line (width + height) v2 layout. Runs after
+        // the geometry is available (glyph bounding boxes are measured from the stored geometry).
+        migrateTextConstraints();
+
         synchroniseGeometryState();
         // this may happen when saving a sketch directly in edit mode
         // but never performed a recompute before
@@ -1449,6 +1734,166 @@ void SketchObject::migrateConstraintOrientations()
     }
 
     Constraints.setValues(std::move(constraints));
+}
+
+void SketchObject::migrateTextConstraints()
+{
+    // Live constraint pointers. We mutate the legacy Text constraints in place and append the new
+    // coupling constraints, then push everything back through setValues (which clones), mirroring
+    // the parabola migration precedent.
+    auto constraints = Constraints.getValues();
+
+    struct PendingText
+    {
+        Constraint* textConstr;
+        int handleGeoId;
+        bool handleIsHeight;
+        Base::Vector3d start;
+        Base::Vector3d newEnd;
+        double aspect;   // baseHeight / baseWidth
+        int newGeoId;    // filled in Phase 2
+    };
+    std::vector<PendingText> pending;
+
+    // Phase 1: locate legacy (schema < 2) single-line texts and compute the synthesized line.
+    for (auto* c : constraints) {
+        if (c->Type != Text || c->getTextSchemaVersion() >= 2 || !c->hasElement(0)) {
+            continue;
+        }
+
+        int handleGeoId = c->getGeoId(0);
+        auto* line = dynamic_cast<const Part::GeomLineSegment*>(getGeometry(handleGeoId));
+        if (!line) {
+            continue;
+        }
+
+        // Measure the existing glyphs' (index >= 1) bounding box; the font path is not stored, so
+        // glyphs must never be regenerated here.
+        std::vector<TopoDS_Shape> glyphShapes;
+        for (int i = 1; c->hasElement(i); ++i) {
+            int g = c->getGeoId(i);
+            if (g == GeoEnum::GeoUndef) {
+                continue;
+            }
+            const Part::Geometry* geo = getGeometry(g);
+            if (!geo) {
+                continue;
+            }
+            try {
+                glyphShapes.push_back(geo->toShape());
+            }
+            catch (const Base::Exception&) {
+                // Skip a glyph whose shape cannot be built; the bounding box stays best-effort.
+            }
+        }
+
+        double bw = 0.0;
+        double bh = 0.0;
+        if (!Part::measureTextShapesBoundingBox(glyphShapes, bw, bh)) {
+            continue;  // degenerate/empty glyph set: leave the text untouched rather than synthesize.
+        }
+        if (bw < Precision::Confusion() || bh < Precision::Confusion()) {
+            continue;
+        }
+        double aspect = bh / bw;
+
+        Base::Vector3d start = line->getStartPoint();
+        Base::Vector3d dir = line->getEndPoint() - start;
+        double handleLen = dir.Length();
+        if (handleLen < Precision::Confusion()) {
+            continue;
+        }
+        dir.Normalize();
+        Base::Vector3d perp(-dir.y, dir.x, 0.0);
+
+        // The existing v1 handle is the height line when its stored isTextHeight flag is set,
+        // otherwise the width line. Synthesize the complementary line so both are proportional to
+        // the measured bounding box (keeping the migrated text at its natural aspect).
+        bool handleIsHeight = c->getIsTextHeight();
+        double newLen = handleIsHeight ? (handleLen / aspect) : (aspect * handleLen);
+        Base::Vector3d newEnd = start + perp * newLen;
+
+        pending.push_back({c, handleGeoId, handleIsHeight, start, newEnd, aspect, GeoEnum::GeoUndef});
+    }
+
+    if (pending.empty()) {
+        return;
+    }
+
+    // Phase 2: synthesize the perpendicular construction line for each pending text. New geometry
+    // takes the highest geoId, so existing geoIds (and the glyph references) are unaffected.
+    for (auto& p : pending) {
+        auto newLine = std::make_unique<Part::GeomLineSegment>();
+        newLine->setPoints(p.start, p.newEnd);
+        p.newGeoId = addGeometry(std::move(newLine), /*construction*/ true);
+    }
+
+    // Phase 3: reorder each Text constraint to the dual-line layout and add the coupling
+    // constraints (Coincident + Perpendicular + the default TextAspectRatio lock).
+    std::vector<Constraint*> newConstraints;
+    newConstraints.reserve(constraints.size() + pending.size() * 3);
+    for (auto* c : constraints) {
+        newConstraints.push_back(c);
+    }
+
+    for (auto& p : pending) {
+        int widthGeoId = p.handleIsHeight ? p.newGeoId : p.handleGeoId;
+        int heightGeoId = p.handleIsHeight ? p.handleGeoId : p.newGeoId;
+
+        // Preserve the existing glyph elements (index >= 1) while re-fronting the two lines.
+        Constraint* c = p.textConstr;
+        std::vector<GeoElementId> glyphs;
+        for (int i = 1; c->hasElement(i); ++i) {
+            int g = c->getGeoId(i);
+            if (g != GeoEnum::GeoUndef) {
+                glyphs.emplace_back(g, c->getPosId(i));
+            }
+        }
+        c->truncateElements(0);
+        c->addElement(GeoElementId(widthGeoId));
+        c->addElement(GeoElementId(heightGeoId));
+        for (const auto& e : glyphs) {
+            c->addElement(e);
+        }
+        c->setTextSchemaVersion(2);
+        c->setTextAspect(p.aspect);
+
+        auto* coincident = new Constraint();
+        coincident->Type = Coincident;
+        coincident->First = widthGeoId;
+        coincident->FirstPos = PointPos::start;
+        coincident->Second = heightGeoId;
+        coincident->SecondPos = PointPos::start;
+        addGeometryState(coincident);
+        newConstraints.push_back(coincident);
+
+        auto* perp = new Constraint();
+        perp->Type = Perpendicular;
+        perp->First = widthGeoId;
+        perp->Second = heightGeoId;
+        addGeometryState(perp);
+        newConstraints.push_back(perp);
+
+        // Default aspect-ratio lock: |height| = k * |width| with k = baseHeight / baseWidth.
+        auto* lock = new Constraint();
+        lock->Type = TextAspectRatio;
+        lock->First = widthGeoId;
+        lock->Second = heightGeoId;
+        lock->setValue(p.aspect);
+        addGeometryState(lock);
+        newConstraints.push_back(lock);
+    }
+
+    Constraints.setValues(std::move(newConstraints));
+
+    Base::Console().critical(
+        this->getFullName(),
+        QT_TRANSLATE_NOOP(
+            "Notifications",
+            "Sketch texts were migrated. Migrated files won't open in previous "
+            "versions of FreeCAD!!\n"
+        )
+    );
 }
 
 void SketchObject::migrateSketch()

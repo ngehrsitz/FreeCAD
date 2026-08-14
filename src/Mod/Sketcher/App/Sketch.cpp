@@ -266,8 +266,11 @@ int Sketch::setUpSketch(
     std::set<int> inGroupGeoIds;
     for (const auto& c : ConstraintList) {
         if (c->Type == Group || c->Type == Text) {
-            // Start from index 1, as 0 is the frame.
-            for (int i = 1; c->hasElement(i); ++i) {
+            // Index 0 is the frame handle. A v2 dual-line Text has a second handle (the height
+            // line) at index 1 which must stay real solver geometry (so it can be dimensioned /
+            // Equal-constrained and coupled by the aspect-ratio lock); its members start at 2.
+            int memberStart = (c->Type == Text && c->getTextSchemaVersion() >= 2) ? 2 : 1;
+            for (int i = memberStart; c->hasElement(i); ++i) {
                 inGroupGeoIds.insert(c->getGeoId(i));
             }
         }
@@ -2486,6 +2489,17 @@ int Sketch::addConstraint(const Constraint* constraint)
         case Equal:
             rtn = addEqualConstraint(constraint->First, constraint->Second);
             break;
+        case TextAspectRatio:
+            // Couples the length of the text's two construction lines with a fixed ratio
+            // (|height| = k*|width|), keeping the glyphs undistorted while one dimension
+            // fully constrains the text. First = width line, Second = height line,
+            // Value = k = baseHeight / baseWidth.
+            rtn = addProportionalLengthConstraint(
+                constraint->First,
+                constraint->Second,
+                constraint->getValue()
+            );
+            break;
         case Symmetric:
             if (constraint->ThirdPos != PointPos::none) {
                 rtn = addSymmetricConstraint(
@@ -2598,6 +2612,13 @@ int Sketch::addConstraint(const Constraint* constraint)
             // Check that the first element is correctly the group construction line
             if (Geoms[checkGeoId(constraint->getGeoId(0))].type != Line) {
                 return -1;
+            }
+            // A v2 dual-line Text also requires its second element (the height line) to be a Line.
+            if (constraint->Type == Text && constraint->getTextSchemaVersion() >= 2) {
+                if (!constraint->hasElement(1)
+                    || Geoms[checkGeoId(constraint->getGeoId(1))].type != Line) {
+                    return -1;
+                }
             }
 
             rtn = ++ConstraintsCounter;
@@ -3894,7 +3915,6 @@ int Sketch::addEqualConstraint(int geoId1, int geoId2)
         GCSsys.addConstraintEqualLength(l1, l2, tag);
         return ConstraintsCounter;
     }
-
     if (Geoms[geoId2].type == Circle) {
         if (Geoms[geoId1].type == Circle) {
             GCS::Circle& c1 = Circles[Geoms[geoId1].index];
@@ -3987,7 +4007,30 @@ int Sketch::addEqualConstraint(int geoId1, int geoId2)
     return -1;
 }
 
-// point on object constraint
+// proportional length constraint between two lines: |line2| = ratio * |line1|
+int Sketch::addProportionalLengthConstraint(int geoId1, int geoId2, double ratio)
+{
+    geoId1 = checkGeoId(geoId1);
+    geoId2 = checkGeoId(geoId2);
+
+    if (Geoms[geoId1].type == Line && Geoms[geoId2].type == Line) {
+        GCS::Line& l1 = Lines[Geoms[geoId1].index];
+        GCS::Line& l2 = Lines[Geoms[geoId2].index];
+
+        int tag = ++ConstraintsCounter;
+        GCSsys.addConstraintProportionalLength(l1, l2, ratio, tag);
+        return ConstraintsCounter;
+    }
+
+    Base::Console().warning(
+        "Proportional length constraints between %s and %s are not supported.\n",
+        nameByType(Geoms[geoId1].type),
+        nameByType(Geoms[geoId2].type)
+    );
+    return -1;
+}
+
+
 int Sketch::addPointOnObjectConstraint(int geoId1, PointPos pos1, int geoId2, bool driving)
 {
     geoId1 = checkGeoId(geoId1);
@@ -5747,6 +5790,13 @@ void Sketch::captureGroupStates()
         // --- Capture Frame State ---
         int frameGeoId = c->getGeoId(0);
         preSolveGroupStates[frameGeoId] = getGroupLineState(frameGeoId);
+
+        // A v2 dual-line Text also has a height line (element 1) as a master; capture it so the
+        // glyphs can follow both axes independently (enabling emergent stretch).
+        if (c->Type == Text && c->getTextSchemaVersion() >= 2 && c->hasElement(1)) {
+            int heightGeoId = c->getGeoId(1);
+            preSolveGroupStates[heightGeoId] = getGroupLineState(heightGeoId);
+        }
     }
 }
 
@@ -5762,6 +5812,10 @@ void Sketch::applyGroupTransformations()
             continue;
         }
 
+        bool dualLineText = (c->Type == Text && c->getTextSchemaVersion() >= 2);
+        // v2 Text keeps both lines (indices 0, 1) as masters; glyph members start at index 2.
+        int memberStart = dualLineText ? 2 : 1;
+
         int frameGeoId = c->getGeoId(0);
 
         // Get the "before" and "after" states of the frame line
@@ -5776,43 +5830,92 @@ void Sketch::applyGroupTransformations()
         double preLen = preVec.Length();
         double scale = (preLen > Precision::Confusion()) ? postVec.Length() / preLen : 1.0;
 
-        // --- Create the Transformation Matrix ---
+        Base::Matrix4D transform;
 
-        // 1. T1: Matrix to translate the group to the origin (using pre-solve start point)
-        Base::Matrix4D T1;  // Identity
-        T1[0][3] = -preSolveFrame.startPoint.x;
-        T1[1][3] = -preSolveFrame.startPoint.y;
-        T1[2][3] = 0;
+        if (dualLineText && c->hasElement(1)) {
+            // Non-uniform transform: X-scale from the width line, Y-scale from the height line.
+            // When the two lengths stay proportional (locked/undistorted) scaleX == scaleY and this
+            // reduces to a uniform similarity; otherwise the glyphs stretch along a single axis.
+            // This mirrors setTextAndFont: uniform when proportional, stretched when not.
+            double scaleX = scale;
+            double scaleY = scale;
 
-        // 2. S: Matrix for scaling
-        Base::Matrix4D S;  // Identity
-        S[0][0] = scale;
-        S[1][1] = scale;
-        S[2][2] = scale;
-
-        // 3. R: Matrix for rotation
-        Base::Matrix4D R;  // Identity
-        if (preLen > Precision::Confusion()) {
-            // We can get the axis and angle from the two vectors and use rotLine
-            Base::Vector3d rotationAxis = preVec.Cross(postVec);
-            double rotationAngle = preVec.GetAngle(postVec);
-            // Only apply rotation if the vectors are not collinear
-            if (rotationAxis.Length() > Precision::Confusion()) {
-                R.rotLine(rotationAxis, rotationAngle);
+            int heightGeoId = c->getGeoId(1);
+            auto itHeight = preSolveGroupStates.find(heightGeoId);
+            if (itHeight != preSolveGroupStates.end()) {
+                double preHeightLen = itHeight->second.getVec().Length();
+                double postHeightLen = getGroupLineState(heightGeoId).getVec().Length();
+                scaleY = (preHeightLen > Precision::Confusion()) ? postHeightLen / preHeightLen
+                                                                 : scaleX;
             }
+
+            // Scale must be applied in the text's own (width-line-aligned) frame, so un-rotate to
+            // the pre-solve orientation, scale, then rotate to the post-solve orientation.
+            double anglePre = std::atan2(preVec.y, preVec.x);
+            double anglePost = std::atan2(postVec.y, postVec.x);
+
+            Base::Matrix4D T1;  // translate pre-solve start point to the origin
+            T1[0][3] = -preSolveFrame.startPoint.x;
+            T1[1][3] = -preSolveFrame.startPoint.y;
+            T1[2][3] = 0;
+
+            Base::Matrix4D Rpre;  // align width line onto +X
+            Rpre.rotZ(-anglePre);
+
+            Base::Matrix4D S;  // non-uniform scale in the text's own frame
+            S[0][0] = scaleX;
+            S[1][1] = scaleY;
+            S[2][2] = 1.0;
+
+            Base::Matrix4D Rpost;  // rotate to the post-solve orientation
+            Rpost.rotZ(anglePost);
+
+            Base::Matrix4D T2;  // translate to the post-solve start point
+            T2[0][3] = postSolveFrame.startPoint.x;
+            T2[1][3] = postSolveFrame.startPoint.y;
+            T2[2][3] = 0;
+
+            transform = T2 * Rpost * S * Rpre * T1;
+        }
+        else {
+            // --- Uniform similarity transform (Group and legacy single-line Text) ---
+
+            // 1. T1: Matrix to translate the group to the origin (using pre-solve start point)
+            Base::Matrix4D T1;  // Identity
+            T1[0][3] = -preSolveFrame.startPoint.x;
+            T1[1][3] = -preSolveFrame.startPoint.y;
+            T1[2][3] = 0;
+
+            // 2. S: Matrix for scaling
+            Base::Matrix4D S;  // Identity
+            S[0][0] = scale;
+            S[1][1] = scale;
+            S[2][2] = scale;
+
+            // 3. R: Matrix for rotation
+            Base::Matrix4D R;  // Identity
+            if (preLen > Precision::Confusion()) {
+                // We can get the axis and angle from the two vectors and use rotLine
+                Base::Vector3d rotationAxis = preVec.Cross(postVec);
+                double rotationAngle = preVec.GetAngle(postVec);
+                // Only apply rotation if the vectors are not collinear
+                if (rotationAxis.Length() > Precision::Confusion()) {
+                    R.rotLine(rotationAxis, rotationAngle);
+                }
+            }
+
+            // 4. T2: Matrix to translate the group to its new final position
+            Base::Matrix4D T2;  // Identity
+            T2[0][3] = postSolveFrame.startPoint.x;
+            T2[1][3] = postSolveFrame.startPoint.y;
+            T2[2][3] = 0;
+
+            // 5. Combine the matrices in the correct order: T_final = T2 * R * S * T1
+            transform = T2 * R * S * T1;
         }
 
-        // 4. T2: Matrix to translate the group to its new final position
-        Base::Matrix4D T2;  // Identity
-        T2[0][3] = postSolveFrame.startPoint.x;
-        T2[1][3] = postSolveFrame.startPoint.y;
-        T2[2][3] = 0;
-
-        // 5. Combine the matrices in the correct order: T_final = T2 * R * S * T1
-        Base::Matrix4D transform = T2 * R * S * T1;
-
         // --- Loop through grouped elements and apply the transform ---
-        for (int i = 1; c->hasElement(i); ++i) {
+        for (int i = memberStart; c->hasElement(i); ++i) {
             int groupedGeoId = c->getGeoId(i);
             if (groupedGeoId == GeoEnum::GeoUndef) {
                 continue;

@@ -482,6 +482,9 @@ std::string PythonConverter::process(const Sketcher::Constraint* constraint, Geo
         case Sketcher::Equal:
             res = "Equal', " + id1 + ", " + id2;
             break;
+        case Sketcher::TextAspectRatio:
+            res = "TextAspectRatio', " + id1 + ", " + id2 + ", " + val;
+            break;
         case Sketcher::Distance:
             if (secondUndef) {
                 res = "Distance', " + id1 + ", " + val;

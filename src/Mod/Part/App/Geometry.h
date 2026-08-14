@@ -1445,10 +1445,30 @@ PartExport void transformAndConvertToGeometry(
     bool height
 );
 
+/// Non-uniform variant of transformAndConvertToGeometry: stretches the glyphs so
+/// their bounding box fills widthLength x heightLength independently on each axis.
+/// `p1`/`p2` are the width line's start/end (anchor + baseline rotation);
+/// `heightLength` is the length of the perpendicular height line.
+PartExport void transformAndConvertToGeometryNonUniform(
+    std::vector<std::unique_ptr<Part::Geometry>>& geos,
+    const std::vector<TopoDS_Shape>& baseShapes,
+    const Base::Vector3d& p1,
+    const Base::Vector3d& p2,
+    double heightLength
+);
+
 PartExport std::vector<TopoDS_Shape> makeTextWires(
     std::string& text,
     std::string& fontFile,
     double height = 1.0,
     double tracking = 0.0
+);
+
+/// Measure the axis-aligned bounding box of a set of (untransformed) text glyph shapes.
+/// Returns false if the set is empty or the box is degenerate.
+PartExport bool measureTextShapesBoundingBox(
+    const std::vector<TopoDS_Shape>& shapes,
+    double& width,
+    double& height
 );
 }  // namespace Part

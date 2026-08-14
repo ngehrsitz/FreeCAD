@@ -2805,9 +2805,10 @@ void ConstraintSnell::errorgrad(double* err, double* grad, double* param)
 
 // --------------------------------------------------------
 // ConstraintEqualLineLength
-ConstraintEqualLineLength::ConstraintEqualLineLength(Line& l1, Line& l2)
+ConstraintEqualLineLength::ConstraintEqualLineLength(Line& l1, Line& l2, double ratio)
     : l1(l1)
     , l2(l2)
+    , ratio(ratio)
 {
     this->l1.PushOwnParams(pvec);
     this->l2.PushOwnParams(pvec);
@@ -2845,11 +2846,11 @@ void ConstraintEqualLineLength::errorgrad(double* err, double* grad, double* par
     length2 = v2.length(dlength2);
 
     if (err) {
-        *err = length2 - length1;
+        *err = length2 - ratio * length1;
     }
 
     if (grad) {
-        *grad = dlength2 - dlength1;
+        *grad = dlength2 - ratio * dlength1;
         // if the one of the lines gets vertical or horizontal, the gradients will become zero. this
         // will affect the diagnose function and the detection of dependent/independent parameters.
         //
@@ -2860,16 +2861,16 @@ void ConstraintEqualLineLength::errorgrad(double* err, double* grad, double* par
         if (fabs(*grad) < 1e-10) {
             double surrogate = 1e-10;
             if (param == l1.p1.x) {
-                *grad = v1.x > 0 ? surrogate : -surrogate;
+                *grad = v1.x > 0 ? ratio * surrogate : -ratio * surrogate;
             }
             if (param == l1.p1.y) {
-                *grad = v1.y > 0 ? surrogate : -surrogate;
+                *grad = v1.y > 0 ? ratio * surrogate : -ratio * surrogate;
             }
             if (param == l1.p2.x) {
-                *grad = v1.x > 0 ? -surrogate : surrogate;
+                *grad = v1.x > 0 ? -ratio * surrogate : ratio * surrogate;
             }
             if (param == l1.p2.y) {
-                *grad = v1.y > 0 ? -surrogate : surrogate;
+                *grad = v1.y > 0 ? -ratio * surrogate : ratio * surrogate;
             }
             if (param == l2.p1.x) {
                 *grad = v2.x > 0 ? surrogate : -surrogate;

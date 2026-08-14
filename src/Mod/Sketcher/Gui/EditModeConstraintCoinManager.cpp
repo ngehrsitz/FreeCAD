@@ -526,6 +526,7 @@ Restart:
 
                 } break;
                 case Parallel:
+                case TextAspectRatio:
                 case Equal: {
                     assert(Constr->First >= -extGeoCount && Constr->First < intGeoCount);
                     assert(Constr->Second >= -extGeoCount && Constr->Second < intGeoCount);
@@ -2017,6 +2018,7 @@ void EditModeConstraintCoinManager::rebuildConstraintNodes(
                 break;
             case Parallel:
             case Perpendicular:
+            case TextAspectRatio:
             case Equal: {
                 // #define CONSTRAINT_SEPARATOR_INDEX_MATERIAL_OR_DATUMLABEL 0
                 sep->addChild(mat);
@@ -2459,6 +2461,9 @@ void EditModeConstraintCoinManager::drawConstraintIcons(const GeoListFacade& geo
                 }
                 break;
             case Equal:
+                multipleIcons = true;
+                break;
+            case TextAspectRatio:
                 multipleIcons = true;
                 break;
             default:
@@ -2967,6 +2972,8 @@ QString EditModeConstraintCoinManager::iconTypeFromConstraint(Constraint* constr
             return QStringLiteral("Constraint_Perpendicular");
         case Equal:
             return QStringLiteral("Constraint_EqualLength");
+        case TextAspectRatio:
+            return QStringLiteral("Constraint_TextAspectRatio");
         case Symmetric:
             return QStringLiteral("Constraint_Symmetric");
         case SnellsLaw:

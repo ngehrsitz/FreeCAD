@@ -11247,6 +11247,134 @@ bool CmdSketcherConstrainGroup::isActive()
 }
 
 // ======================================================================================
+DEF_STD_CMD_A(CmdSketcherConstrainTextAspectRatio)
+
+CmdSketcherConstrainTextAspectRatio::CmdSketcherConstrainTextAspectRatio()
+    : Command("Sketcher_ConstrainTextAspectRatio")
+{
+    sAppModule = "Sketcher";
+    sGroup = "Sketcher";
+    sMenuText = QT_TR_NOOP("Constrain/Release Text Aspect Ratio");
+    sToolTipText = QT_TR_NOOP(
+        "Toggles the aspect-ratio lock of the selected text. With the lock on, a single "
+        "dimension on either construction line fully sizes the text (uniform, undistorted). "
+        "Remove the lock and dimension both construction lines to stretch the text.");
+    sWhatsThis = "Sketcher_ConstrainTextAspectRatio";
+    sStatusTip = sToolTipText;
+    sPixmap = "Constraint_TextAspectRatio";
+    eType = ForEdit;
+}
+
+void CmdSketcherConstrainTextAspectRatio::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+
+    // get the selection
+    std::vector<Gui::SelectionObject> selection = getSelection().getSelectionEx();
+
+    // only one sketch with its subelements are allowed to be selected
+    if (selection.size() != 1
+        || !selection[0].isObjectTypeOf(Sketcher::SketchObject::getClassTypeId())) {
+        Gui::TranslatedUserWarning(getActiveGuiDocument()->getDocument(),
+                                   QObject::tr("Wrong selection"),
+                                   QObject::tr("Select one or more texts from the sketch."));
+        return;
+    }
+
+    auto* Obj = static_cast<Sketcher::SketchObject*>(selection[0].getObject());
+    const std::vector<std::string>& SubNames = selection[0].getSubNames();
+
+    // Resolve the selection to the set of dual-line Text constraint indices it touches (a text can
+    // be selected via its construction lines, its glyphs, or the shared anchor handle).
+    std::set<int> textIdx;
+    for (const auto& subName : SubNames) {
+        int geoId;
+        Sketcher::PointPos posId;
+        getIdsFromName(subName, Obj, geoId, posId);
+        int t = Obj->getTextConstraintIndex(geoId);
+        if (t >= 0) {
+            textIdx.insert(t);
+        }
+    }
+
+    if (textIdx.empty()) {
+        Gui::TranslatedUserWarning(
+            Obj,
+            QObject::tr("Wrong selection"),
+            QObject::tr("Select a text (its construction lines or glyphs)."));
+        return;
+    }
+
+    // Decide add-vs-remove for each text before mutating anything (constraint indices shift on
+    // delete; geoIds do not).
+    struct Action
+    {
+        bool remove;
+        int lockIndex;
+        int widthGeoId;
+        int heightGeoId;
+        double aspect;
+    };
+    std::vector<Action> actions;
+    const std::vector<Sketcher::Constraint*>& vals = Obj->Constraints.getValues();
+    for (int t : textIdx) {
+        const auto* c = vals[t];
+        int widthGeoId = c->getGeoId(0);
+        int heightGeoId = c->getGeoId(1);
+        int lockIndex = Obj->getTextAspectLockIndex(t);
+        double aspect = c->getTextAspect();
+        if (aspect <= 0.0) {
+            // Fall back to the current geometric aspect ratio |height| / |width|.
+            auto* wl = dynamic_cast<const Part::GeomLineSegment*>(Obj->getGeometry(widthGeoId));
+            auto* hl = dynamic_cast<const Part::GeomLineSegment*>(Obj->getGeometry(heightGeoId));
+            if (wl && hl) {
+                double w = (wl->getEndPoint() - wl->getStartPoint()).Length();
+                double h = (hl->getEndPoint() - hl->getStartPoint()).Length();
+                if (w > Precision::Confusion()) {
+                    aspect = h / w;
+                }
+            }
+        }
+        actions.push_back({lockIndex >= 0, lockIndex, widthGeoId, heightGeoId, aspect});
+    }
+
+    openCommand(QT_TRANSLATE_NOOP("Command", "Toggle text aspect ratio lock"));
+
+    // Removals first, in descending constraint-index order, so earlier indices stay valid.
+    std::vector<int> toDelete;
+    for (const auto& a : actions) {
+        if (a.remove) {
+            toDelete.push_back(a.lockIndex);
+        }
+    }
+    std::sort(toDelete.begin(), toDelete.end(), std::greater<>());
+    for (int idx : toDelete) {
+        Gui::cmdAppObjectArgs(Obj, "delConstraint(%d)", idx);
+    }
+
+    // Then additions. Adding a lock references stable geoIds so it is unaffected by the deletions.
+    for (const auto& a : actions) {
+        if (!a.remove && a.aspect > 0.0) {
+            Gui::cmdAppObjectArgs(
+                Obj,
+                "addConstraint(Sketcher.Constraint('TextAspectRatio',%d,%d,%f))",
+                a.widthGeoId,
+                a.heightGeoId,
+                a.aspect);
+        }
+    }
+
+    tryAutoRecompute(Obj);
+    commitCommand();
+    getSelection().clearSelection();
+}
+
+bool CmdSketcherConstrainTextAspectRatio::isActive()
+{
+    return isCreateConstraintActive(getActiveGuiDocument());
+}
+
+// ======================================================================================
 DEF_STD_CMD_A(CmdSketcherChangeDimensionConstraint)
 
 CmdSketcherChangeDimensionConstraint::CmdSketcherChangeDimensionConstraint()
@@ -11572,6 +11700,7 @@ void CreateSketcherCommandsConstraints()
     rcCmdMgr.addCommand(new CmdSketcherConstrainSymmetric());
     rcCmdMgr.addCommand(new CmdSketcherConstrainSnellsLaw());
     rcCmdMgr.addCommand(new CmdSketcherConstrainGroup());
+    rcCmdMgr.addCommand(new CmdSketcherConstrainTextAspectRatio());
     rcCmdMgr.addCommand(new CmdSketcherChangeDimensionConstraint());
     rcCmdMgr.addCommand(new CmdSketcherToggleDrivingConstraint());
     rcCmdMgr.addCommand(new CmdSketcherToggleActiveConstraint());

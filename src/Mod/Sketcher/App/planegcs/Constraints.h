@@ -1302,12 +1302,14 @@ class ConstraintEqualLineLength: public Constraint
 private:
     Line l1;
     Line l2;
+    // enforces |l2| = ratio * |l1| (ratio == 1.0 is the plain equal-length case)
+    double ratio;
     // writes pointers in pvec to the parameters of line1, line2
     void reconstructGeomPointers() override;
     void errorgrad(double* err, double* grad, double* param) override;
 
 public:
-    ConstraintEqualLineLength(Line& l1, Line& l2);
+    ConstraintEqualLineLength(Line& l1, Line& l2, double ratio = 1.0);
     ConstraintType getTypeId() override;
 };
 

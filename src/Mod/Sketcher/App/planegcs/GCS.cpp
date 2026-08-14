@@ -1211,6 +1211,14 @@ int System::addConstraintEqualLength(Line& l1, Line& l2, int tagId, bool driving
     return addConstraint(constr);
 }
 
+int System::addConstraintProportionalLength(Line& l1, Line& l2, double ratio, int tagId, bool driving)
+{
+    Constraint* constr = new ConstraintEqualLineLength(l1, l2, ratio);
+    constr->setTag(tagId);
+    constr->setDriving(driving);
+    return addConstraint(constr);
+}
+
 int System::addConstraintEqualRadius(Circle& c1, Circle& c2, int tagId, bool driving)
 {
     return addConstraintEqual(c1.rad, c2.rad, tagId, driving);

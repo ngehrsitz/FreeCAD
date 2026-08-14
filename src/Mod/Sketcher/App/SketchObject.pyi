@@ -421,7 +421,10 @@ class SketchObject(Part2DObject):
                 constraint: The index of the Text constraint.
                 text: The text string to display.
                 font: The full path to the font file (.ttf, .otf, etc.).
-                isHeight: Is the line handle of the group the height of the text.
+                isHeight: Legacy, ignored. It formerly selected whether the handle line drove
+                    the text height or width. Scaling is now governed entirely by the text's
+                    two construction lines and the (optional) aspect-ratio lock, so this flag
+                    no longer has any effect; it is kept only for script back-compatibility.
                 isConstruction: Are text geometry construction of not.
         """
         ...

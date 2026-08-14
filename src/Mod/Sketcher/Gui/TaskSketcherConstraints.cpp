@@ -145,6 +145,10 @@ public:
             case Sketcher::Equal:
                 type = QCoreApplication::translate("SketcherGui::ConstraintView", "Equal");
                 break;
+            case Sketcher::TextAspectRatio:
+                type =
+                    QCoreApplication::translate("SketcherGui::ConstraintView", "TextAspectRatio");
+                break;
             case Sketcher::Symmetric:
                 type = QCoreApplication::translate("SketcherGui::ConstraintView", "Symmetric");
                 break;
@@ -320,6 +324,8 @@ public:
             // static QIcon ellipseXUAngl (
             // Gui::BitmapFactory().iconFromTheme("Constraint_Ellipse_Axis_Angle") );
             static QIcon equal(Gui::BitmapFactory().iconFromTheme("Constraint_EqualLength"));
+            static QIcon textaspect(
+                Gui::BitmapFactory().iconFromTheme("Constraint_TextAspectRatio"));
             static QIcon pntoo(Gui::BitmapFactory().iconFromTheme("Constraint_PointOnObject"));
             static QIcon group(Gui::BitmapFactory().iconFromTheme("Constraint_Group"));
             static QIcon text(Gui::BitmapFactory().iconFromTheme("Constraint_Text"));
@@ -395,6 +401,8 @@ public:
                     return selicon(constraint, tang, tang);
                 case Sketcher::Equal:
                     return selicon(constraint, equal, equal);
+                case Sketcher::TextAspectRatio:
+                    return selicon(constraint, textaspect, textaspect);
                 case Sketcher::Symmetric:
                     return selicon(constraint, symm, symm);
                 case Sketcher::Distance:
@@ -469,6 +477,7 @@ public:
             case Sketcher::Perpendicular:
             case Sketcher::Tangent:
             case Sketcher::Equal:
+            case Sketcher::TextAspectRatio:
             case Sketcher::Symmetric:
             case Sketcher::Group:
             case Sketcher::Text:

@@ -49,18 +49,9 @@ namespace SketcherGui
 
 class DrawSketchHandlerText;
 
-namespace ConstructionMethods
-{
-
-enum class TextConstructionMethod
-{
-    Width,
-    Height,
-    End  // Must be the last one
-};
-
-}  // namespace ConstructionMethods
-
+// The Create Text tool has no construction-method selector: every text gets both a width and a
+// height construction line, and its scaling behaviour is emergent from the constraint state
+// (see SketchObject::textShouldStretch and the TextAspectRatio lock). The single combobox is Font.
 using DSHTextController = DrawSketchDefaultWidgetController<
     DrawSketchHandlerText,
     /*SelectModeT*/ StateMachines::TwoSeekEnd,
@@ -68,10 +59,8 @@ using DSHTextController = DrawSketchDefaultWidgetController<
     /*OnViewParametersT =*/OnViewParameters<4, 4>,  // NOLINT
     /*WidgetParametersT =*/WidgetParameters<0, 0>,  // NOLINT
     /*WidgetCheckboxesT =*/WidgetCheckboxes<0, 0>,  // NOLINT
-    /*WidgetComboboxesT =*/WidgetComboboxes<2, 2>,  // NOLINT
-    /*WidgetLineEditsT =*/WidgetLineEdits<1, 1>,    // NOLINT
-    ConstructionMethods::TextConstructionMethod,
-    /*bool PFirstComboboxIsConstructionMethod =*/true>;
+    /*WidgetComboboxesT =*/WidgetComboboxes<1, 1>,  // NOLINT  (Font only)
+    /*WidgetLineEditsT =*/WidgetLineEdits<1, 1>>;    // NOLINT  (Text string)
 
 using DSHTextControllerBase = DSHTextController::ControllerBase;
 
@@ -84,7 +73,7 @@ class DrawSketchHandlerText: public DrawSketchHandlerTextBase
     friend DSHTextControllerBase;
 
 public:
-    explicit DrawSketchHandlerText(ConstructionMethod constrMethod = ConstructionMethod::Width)
+    explicit DrawSketchHandlerText(ConstructionMethod constrMethod = ConstructionMethod::End)
         : DrawSketchHandlerTextBase(constrMethod)
         , length(0.0)
         , handleId(0)
@@ -129,7 +118,49 @@ private:
         try {
             openCommand(QT_TRANSLATE_NOOP("Command", "Add sketch Text"));
 
-            // Add the Handle Line
+            // The interactively drawn line is always the width/baseline line.
+            Base::Vector2d widthVec = endPoint - startPoint;
+            double widthLength = widthVec.Length();
+            if (widthLength < Precision::Confusion()) {
+                abortCommand();
+                return;
+            }
+
+            // Measure the text's natural aspect (height/width) so the auto-generated
+            // perpendicular height line starts undistorted, and so the default
+            // TextAspectRatio lock is created with the correct ratio k = baseHeight/baseWidth.
+            double aspect = 1.0;
+            {
+                std::vector<TopoDS_Shape> shapes;
+                if (cachedTextName == text && cachedFontName == font && !cachedBaseShapes.empty()) {
+                    shapes = cachedBaseShapes;
+                }
+                else if (!font.empty()) {
+                    shapes = Part::makeTextWires(text, font);
+                }
+                double bw = 0.0;
+                double bh = 0.0;
+                if (Part::measureTextShapesBoundingBox(shapes, bw, bh)
+                    && bw > Precision::Confusion()) {
+                    aspect = bh / bw;
+                }
+            }
+            if (aspect < Precision::Confusion()) {
+                aspect = 1.0;
+            }
+
+            // Height line: perpendicular to the width line, sharing the start point,
+            // length = aspect * widthLength (so the text is undistorted at creation).
+            Base::Vector2d perp(-widthVec.y, widthVec.x);
+            if (perp.Length() > Precision::Confusion()) {
+                perp = perp / perp.Length();
+            }
+            else {
+                perp = Base::Vector2d(0.0, 1.0);
+            }
+            Base::Vector2d heightEnd = startPoint + perp * (aspect * widthLength);
+
+            // 1. Add the width (baseline) construction line.
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
                 "addGeometry(Part.LineSegment(App.Vector(%f, %f,0), App.Vector(%f, %f,0)), True)",
@@ -138,38 +169,70 @@ private:
                 endPoint.x,
                 endPoint.y
             );
-            handleId = getHighestCurveIndex();
+            int widthId = getHighestCurveIndex();
+            handleId = widthId;
+
+            // 2. Add the perpendicular height construction line, sharing the start point.
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addGeometry(Part.LineSegment(App.Vector(%f, %f,0), App.Vector(%f, %f,0)), True)",
+                startPoint.x,
+                startPoint.y,
+                heightEnd.x,
+                heightEnd.y
+            );
+            int heightId = getHighestCurveIndex();
+
+            // 3. Anchor the two lines together and keep them perpendicular.
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident', %d, 1, %d, 1))",
+                widthId,
+                heightId
+            );
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Perpendicular', %d, %d))",
+                widthId,
+                heightId
+            );
+
+            // 4. Default aspect-ratio lock (|height| = k*|width|), so a single dimension
+            //    on either line fully determines the text size (uniform, undistorted).
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('TextAspectRatio', %d, %d, %f))",
+                widthId,
+                heightId,
+                aspect
+            );
 
             std::string escText = escapeForPython(text);
             std::string escFontPath = escapeForPython(font);
-            bool isHeight = constructionMethod() == ConstructionMethod::Height;
             const char* constrBoolStr = isConstructionMode() ? "True" : "False";
-            const char* heightBoolStr = isHeight ? "True" : "False";
 
-            // Add the 'Text' Constraint (Empty)
-            // We initialize the constraint containing ONLY the handle (element 0).
-            // We do not add the text geometry manually to avoid floating-point precision loss
+            // 5. Add the dual-line 'Text' constraint. element[0]=width, element[1]=height.
+            // Constructed with two leading line references it is stamped schema=2.
+            // We do not add the glyph geometry manually to avoid floating-point precision loss
             // associated with Python serialization.
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
-                "addConstraint(Sketcher.Constraint('Text', [%d, 0], '%s', '%s', %s))",
-                handleId,
+                "addConstraint(Sketcher.Constraint('Text', [%d, 0, %d, 0], '%s', '%s', False))",
+                widthId,
+                heightId,
                 escText.c_str(),
-                escFontPath.c_str(),
-                heightBoolStr
+                escFontPath.c_str()
             );
 
-            // Generate Text Geometry by calling setTextAndFont on the new constraint.
-            // This triggers the C++ logic to generate the exact geometry and insert it
-            // into the sketch, ensuring closed wires and perfect precision.
+            // 6. Generate the glyph geometry via setTextAndFont on the new Text constraint
+            // (last in the list). This runs the C++ path that inserts exact closed wires.
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
                 "setTextAndFont(len(App.ActiveDocument.getObject('%s').Constraints)-1, '%s', '%s', "
-                "%s, %s)",
+                "False, %s)",
                 getSketchObject()->getNameInDocument(),
                 escText.c_str(),
                 escFontPath.c_str(),
-                heightBoolStr,
                 constrBoolStr
             );
 
@@ -301,12 +364,14 @@ private:
         }
 
         // 2. Call the generic helper to transform and create the final geometry.
+        // The interactively drawn line is always the width/baseline, so the preview
+        // is rendered uniformly (isHeight = false).
         transformAndConvertToGeometry(
             ShapeGeometry,
             cachedBaseShapes,
             toVector3d(startPoint),
             toVector3d(endPoint),
-            constructionMethod() == ConstructionMethod::Height
+            false
         );
 
         // 3. Set construction mode on the newly created geometry
@@ -319,21 +384,19 @@ private:
 
     std::list<Gui::InputHint> getToolHints() const override
     {
-        return lookupTextHints(static_cast<int>(constructionMethod()), static_cast<int>(state()));
+        return lookupTextHints(static_cast<int>(state()));
     }
 
     struct HintEntry
     {
-        int constructionMethod;
         int state;
         std::list<Gui::InputHint> hints;
     };
 
     using HintTable = std::vector<HintEntry>;
 
-    static Gui::InputHint switchModeHint();
     static HintTable getTextHintTable();
-    static std::list<Gui::InputHint> lookupTextHints(int method, int state);
+    static std::list<Gui::InputHint> lookupTextHints(int state);
 };
 
 template<>
@@ -357,12 +420,6 @@ template<>
 void DSHTextController::configureToolWidget()
 {
     if (!init) {  // Code to be executed only upon initialisation
-        QStringList names = {
-            QApplication::translate("TaskSketcherTool_c1_text", "Width"),
-            QApplication::translate("TaskSketcherTool_c1_text", "Height")
-        };
-        toolWidget->setComboboxElements(WCombobox::FirstCombo, names);
-
         toolWidget->setLineEditLabel(
             WLineEdit::FirstEdit,
             QApplication::translate("TaskSketcherTool_Text", "Text")
@@ -370,7 +427,7 @@ void DSHTextController::configureToolWidget()
         toolWidget->setLineEditText(WLineEdit::FirstEdit, QString::fromStdString(handler->text));
 
         toolWidget->setComboboxLabel(
-            WCombobox::SecondCombo,
+            WCombobox::FirstCombo,
             QApplication::translate("TaskSketcherTool_Text", "Font")
         );
 
@@ -380,7 +437,7 @@ void DSHTextController::configureToolWidget()
         // 2. Populate combobox with friendly names (the keys of the map)
         QStringList fontNames = handler->fontPathMap.keys();
         fontNames.sort(Qt::CaseInsensitive);
-        toolWidget->setComboboxElements(WCombobox::SecondCombo, fontNames);
+        toolWidget->setComboboxElements(WCombobox::FirstCombo, fontNames);
 
         // 3. Set a sensible default font
         QString defaultFontName;
@@ -402,7 +459,7 @@ void DSHTextController::configureToolWidget()
             for (const auto& key : fontNames) {
                 if (key.compare(defaultFontName, Qt::CaseInsensitive) == 0) {
                     handler->font = handler->fontPathMap.value(key).toStdString();
-                    toolWidget->setComboboxCurrentText(WCombobox::SecondCombo, key);
+                    toolWidget->setComboboxCurrentText(WCombobox::FirstCombo, key);
                     break;
                 }
             }
@@ -439,12 +496,10 @@ void DSHTextController::adaptDrawingToLineEditTextChange(int lineeditindex, cons
 template<>
 void DSHTextController::adaptDrawingToComboboxChange(int comboboxindex, int value)
 {
+    Q_UNUSED(value);
     if (comboboxindex == WCombobox::FirstCombo) {
-        handler->setConstructionMethod(static_cast<ConstructionMethod>(value));
-    }
-    else if (comboboxindex == WCombobox::SecondCombo) {
         // Get the selected friendly name
-        QString fontName = toolWidget->getComboboxCurrentText(WCombobox::SecondCombo);
+        QString fontName = toolWidget->getComboboxCurrentText(WCombobox::FirstCombo);
         // Look up the full path in our map and update the handler
         if (handler->fontPathMap.contains(fontName)) {
             handler->font = handler->fontPathMap.value(fontName).toStdString();
@@ -491,9 +546,6 @@ void DSHTextControllerBase::doEnforceControlParameters(Base::Vector2d& onSketchP
 
             if (fourthParam->isSet) {
                 double angle = Base::toRadians(fourthParam->getValue());
-                if (handler->constructionMethod() == ConstructionMethod::Height) {
-                    angle += M_PI * 0.5;
-                }
                 Base::Vector2d dir(cos(angle), sin(angle));
                 onSketchPos.ProjectToLine(onSketchPos - handler->startPoint, dir);
                 onSketchPos += handler->startPoint;
@@ -544,15 +596,7 @@ void DSHTextController::adaptParameters(Base::Vector2d onSketchPos)
                 setOnViewParameterValue(OnViewParameter::Third, vec.Length());
             }
 
-            double range;
-            if (handler->constructionMethod() == ConstructionMethod::Height) {
-                Base::Vector2d norm(vec.y, -vec.x);
-                Base::Vector2d textAlignPoint = handler->startPoint + norm;
-                range = (textAlignPoint - handler->startPoint).Angle();
-            }
-            else {
-                range = (handler->endPoint - handler->startPoint).Angle();
-            }
+            double range = (handler->endPoint - handler->startPoint).Angle();
 
 
             if (!fourthParam->isSet) {
@@ -649,10 +693,6 @@ void DSHTextController::addConstraints()
 
     auto constraintp4angle = [&]() {
         double angle = Base::toRadians(p4);
-        if (handler->constructionMethod() == ConstructionMethod::Height) {
-            angle += M_PI * 0.5;
-        }
-
         ConstraintLineByAngle(firstCurve, angle, obj);
     };
 
@@ -720,44 +760,24 @@ void DSHTextController::addConstraints()
     }
 }
 
-Gui::InputHint DrawSketchHandlerText::switchModeHint()
-{
-    return {QObject::tr("%1 switch mode"), {Gui::InputHint::UserInput::KeyM}};
-}
-
 DrawSketchHandlerText::HintTable DrawSketchHandlerText::getTextHintTable()
 {
-    const auto switchHint = switchModeHint();
     return {
-        // Structure: {constructionMethod, state, {hints...}}
-        {static_cast<int>(ConstructionMethod::Height),
-         0,
-         {{QObject::tr("%1 pick bottom-left point"), {Gui::InputHint::UserInput::MouseLeft}},
-          switchHint}},
-        {static_cast<int>(ConstructionMethod::Height),
-         1,
-         {{QObject::tr("%1 pick top-left point"), {Gui::InputHint::UserInput::MouseLeft}},
-          switchHint}},
-        {static_cast<int>(ConstructionMethod::Width),
-         0,
-         {{QObject::tr("%1 pick bottom-left point"), {Gui::InputHint::UserInput::MouseLeft}},
-          switchHint}},
-        {static_cast<int>(ConstructionMethod::Width),
-         1,
-         {{QObject::tr("%1 pick bottom-right point"), {Gui::InputHint::UserInput::MouseLeft}},
-          switchHint}}
+        // Structure: {state, {hints...}}
+        {0, {{QObject::tr("%1 pick start point"), {Gui::InputHint::UserInput::MouseLeft}}}},
+        {1, {{QObject::tr("%1 pick end point"), {Gui::InputHint::UserInput::MouseLeft}}}}
     };
 }
 
-std::list<Gui::InputHint> DrawSketchHandlerText::lookupTextHints(int method, int state)
+std::list<Gui::InputHint> DrawSketchHandlerText::lookupTextHints(int state)
 {
     const auto TextHintTable = getTextHintTable();
 
     auto it = std::find_if(
         TextHintTable.begin(),
         TextHintTable.end(),
-        [method, state](const HintEntry& entry) {
-            return entry.constructionMethod == method && entry.state == state;
+        [state](const HintEntry& entry) {
+            return entry.state == state;
         }
     );
 

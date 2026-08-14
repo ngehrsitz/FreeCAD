@@ -73,6 +73,7 @@ enum ConstraintType : int
     Weight = 19,
     Group = 20,
     Text = 21,
+    TextAspectRatio = 22,
     NumConstraintTypes  // must be the last item!
 };
 
@@ -204,7 +205,8 @@ private:
          "Diameter",
          "Weight",
          "Group",
-         "Text"}};
+         "Text",
+         "TextAspectRatio"}};
     // clang-format on
 
     constexpr static std::array<const char*, InternalAlignmentType::NumInternalAlignmentType>
@@ -263,6 +265,15 @@ public:
     void setFont(const std::string& font);
     bool getIsTextHeight() const;
     void setIsTextHeight(bool val);
+    /// Text schema version stored in MetaData: 1 = legacy single-line, 2 = dual (width+height) line.
+    /// Defaults to 1 when absent so that legacy/round-tripped constraints are recognised for migration.
+    int getTextSchemaVersion() const;
+    void setTextSchemaVersion(int version);
+    /// Natural aspect ratio (baseHeight / baseWidth) of the rendered glyphs, cached in MetaData so
+    /// the stretch decision can be made both at regeneration and during live dragging. Returns 0 if
+    /// unknown (not yet stamped).
+    double getTextAspect() const;
+    void setTextAspect(double aspect);
 
 #ifdef SKETCHER_CONSTRAINT_USE_LEGACY_ELEMENTS
     // Deprecated, use getElement/setElement instead

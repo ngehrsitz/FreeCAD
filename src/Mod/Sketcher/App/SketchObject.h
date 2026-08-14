@@ -161,6 +161,25 @@ public:
      */
     int getGroupHandleIfInGroup(int geoId);
 
+    /// True if `constr` is a dual-line (schema >= 2) Text constraint: element[0] = width line,
+    /// element[1] = height line, element[2..N] = glyphs.
+    static bool isDualLineText(const Constraint* constr);
+    /// Index of the first glyph member in a Group/Text constraint's element list:
+    /// 2 for a dual-line Text, 1 otherwise (legacy Text and Group).
+    static int firstTextMemberIndex(const Constraint* constr);
+    /// True if the two construction lines of a dual-line Text are both length-driven and their
+    /// current lengths are non-proportional to the glyphs' natural aspect ratio, i.e. the text
+    /// should be rendered stretched (non-uniform). The sole source of the uniform-vs-stretch
+    /// decision, shared by regeneration and live dragging.
+    bool textShouldStretch(const Constraint* textConstr) const;
+
+    /// If @p geoId belongs to a dual-line Text (its width/height line, a glyph, or the shared
+    /// anchor handle), return that Text constraint's index; otherwise -1.
+    int getTextConstraintIndex(int geoId) const;
+    /// Index of the TextAspectRatio lock coupling the two construction lines of the dual-line
+    /// Text at @p textConstrIndex, or -1 if it is not a dual-line Text or has no lock.
+    int getTextAspectLockIndex(int textConstrIndex) const;
+
     /*!
      \brief Add geometry to a sketch - It adds a copy with a different uuid (internally uses copy()
      instead of clone()) \param geo - geometry to add \param construction - true for construction
@@ -1093,6 +1112,11 @@ protected:
     /// Derive the signed-constraint orientations of a legacy sketch from its stored geometry.
     /// Must be called once the external geometry of the sketch is available.
     void migrateConstraintOrientations();
+    /// Upgrade legacy (schema < 2) single-line Text constraints to the v2 dual-line layout:
+    /// synthesize the missing perpendicular construction line from the existing glyph bounding
+    /// box, add Coincident + Perpendicular + a default TextAspectRatio lock, and stamp schema=2.
+    /// Must be called once the geometry of the sketch is available.
+    void migrateTextConstraints();
 
     static void appendConstraintsMsg(
         const std::vector<int>& vector,
@@ -1163,6 +1187,14 @@ private:
     const Part::Geometry* getGeometryOrWarn(int geoId) const;
     void setOrientationDistance(Constraint* constr);
     void setOrientationTangent(Constraint* constr);
+
+    /// Heuristic: true if a driving dimensional/coupling constraint (Distance edge-length,
+    /// endpoint DistanceX/Y, Equal, TextAspectRatio, Block) fixes the length of the line @p geoId.
+    bool isLineLengthDriven(int geoId) const;
+    /// Length of the line segment @p geoId, or 0 if it is not a line.
+    double getLineLength(int geoId) const;
+    /// Find the TextAspectRatio lock referencing both @p widthGeoId and @p heightGeoId, or -1.
+    int findTextAspectLock(int widthGeoId, int heightGeoId) const;
     /// Re-derive the orientation of every signed constraint that references one of
     /// @p reversedGeoIds, whose projection came back running the other way.
     void reorientConstraintsOnReversedGeometry(const std::set<int>& reversedGeoIds);
