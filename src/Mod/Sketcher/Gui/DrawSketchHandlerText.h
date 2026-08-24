@@ -66,9 +66,9 @@ using DSHTextController = DrawSketchDefaultWidgetController<
     /*SelectModeT*/ StateMachines::TwoSeekEnd,
     /*PAutoConstraintSize =*/2,
     /*OnViewParametersT =*/OnViewParameters<4, 4>,  // NOLINT
-    /*WidgetParametersT =*/WidgetParameters<0, 0>,  // NOLINT
+    /*WidgetParametersT =*/WidgetParameters<1, 1>,  // NOLINT
     /*WidgetCheckboxesT =*/WidgetCheckboxes<0, 0>,  // NOLINT
-    /*WidgetComboboxesT =*/WidgetComboboxes<2, 2>,  // NOLINT
+    /*WidgetComboboxesT =*/WidgetComboboxes<3, 3>,  // NOLINT
     /*WidgetLineEditsT =*/WidgetLineEdits<1, 1>,    // NOLINT
     ConstructionMethods::TextConstructionMethod,
     /*bool PFirstComboboxIsConstructionMethod =*/true>;
@@ -90,8 +90,12 @@ public:
         , handleId(0)
         , text(QObject::tr("Text").toStdString())
         , font("")
+        , direction("ltr")
+        , tracking(0.0)
         , cachedTextName("")
         , cachedFontName("")
+        , cachedDirectionName("")
+        , cachedTracking(0.0)
         , cachedBaseShapes({}) {};
     ~DrawSketchHandlerText() override = default;
 
@@ -142,6 +146,7 @@ private:
 
             std::string escText = escapeForPython(text);
             std::string escFontPath = escapeForPython(font);
+            std::string escDirection = escapeForPython(direction);
             bool isHeight = constructionMethod() == ConstructionMethod::Height;
             const char* constrBoolStr = isConstructionMode() ? "True" : "False";
             const char* heightBoolStr = isHeight ? "True" : "False";
@@ -165,12 +170,14 @@ private:
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
                 "setTextAndFont(len(App.ActiveDocument.getObject('%s').Constraints)-1, '%s', '%s', "
-                "%s, %s)",
+                "%s, %s, '%s', %f)",
                 getSketchObject()->getNameInDocument(),
                 escText.c_str(),
                 escFontPath.c_str(),
                 heightBoolStr,
-                constrBoolStr
+                constrBoolStr,
+                escDirection.c_str(),
+                tracking
             );
 
             commitCommand();
@@ -272,8 +279,12 @@ private:
 
     std::string text;
     std::string font;
+    std::string direction;
+    double tracking;
     std::string cachedTextName;
     std::string cachedFontName;
+    std::string cachedDirectionName;
+    double cachedTracking;
     std::vector<TopoDS_Shape> cachedBaseShapes;
 
     void createShape(bool onlyeditoutline) override
@@ -288,12 +299,16 @@ private:
 
         // 1. Check if the cache is valid. If the user selected a new file,
         // or if the cache is empty, we need to re-load from the SVG.
-        if (cachedTextName != text || cachedFontName != font || cachedBaseShapes.empty()) {
+        if (cachedTextName != text || cachedFontName != font
+            || cachedDirectionName != direction || cachedTracking != tracking
+            || cachedBaseShapes.empty()) {
             if (!font.empty()) {
                 cachedTextName = text;
                 cachedFontName = font;
+                cachedDirectionName = direction;
+                cachedTracking = tracking;
                 // This is the one-time slow operation to get the template shapes.
-                cachedBaseShapes = Part::makeTextWires(text, font);
+                cachedBaseShapes = Part::makeTextWires(text, font, 1.0, tracking, direction);
             }
             else {
                 cachedBaseShapes.clear();
@@ -407,6 +422,29 @@ void DSHTextController::configureToolWidget()
                 }
             }
         }
+
+        // Direction combo
+        toolWidget->setComboboxLabel(
+            WCombobox::ThirdCombo,
+            QApplication::translate("TaskSketcherTool_Text", "Direction")
+        );
+        QStringList dirNames = {
+            QApplication::translate("TaskSketcherTool_Text", "Left to Right (LTR)"),
+            QApplication::translate("TaskSketcherTool_Text", "Right to Left (RTL)"),
+            QApplication::translate("TaskSketcherTool_Text", "Top to Bottom (TTB)"),
+            QApplication::translate("TaskSketcherTool_Text", "Bottom to Top (BTT)")
+        };
+        toolWidget->setComboboxElements(WCombobox::ThirdCombo, dirNames);
+
+        // Tracking spinner
+        toolWidget->setParameterLabel(
+            WParameter::First,
+            QApplication::translate("TaskSketcherTool_Text", "Tracking")
+        );
+        toolWidget->setParameter(WParameter::First, 0.0);
+        toolWidget->configureParameterMin(WParameter::First, -1000.0);  // NOLINT
+        toolWidget->configureParameterMax(WParameter::First, 1000.0);   // NOLINT
+        toolWidget->configureParameterDecimals(WParameter::First, 3);   // NOLINT
     }
 
     onViewParameters[OnViewParameter::First]->setLabelType(Gui::SoDatumLabel::DISTANCEX);
@@ -437,8 +475,7 @@ void DSHTextController::adaptDrawingToLineEditTextChange(int lineeditindex, cons
 }
 
 template<>
-void DSHTextController::adaptDrawingToComboboxChange(int comboboxindex, int value)
-{
+void DSHTextController::adaptDrawingToComboboxChange(int comboboxindex, int value){
     if (comboboxindex == WCombobox::FirstCombo) {
         handler->setConstructionMethod(static_cast<ConstructionMethod>(value));
     }
@@ -450,6 +487,20 @@ void DSHTextController::adaptDrawingToComboboxChange(int comboboxindex, int valu
             handler->font = handler->fontPathMap.value(fontName).toStdString();
         }
         // The redraw is handled by the controller's finishControlsChanged()
+    }
+    else if (comboboxindex == WCombobox::ThirdCombo) {
+        static const std::vector<std::string> dirKeys = {"ltr", "rtl", "ttb", "btt"};
+        if (value >= 0 && value < static_cast<int>(dirKeys.size())) {
+            handler->direction = dirKeys[value];
+        }
+    }
+}
+
+template<>
+void DSHTextController::adaptDrawingToParameterChange(int parameterindex, double value)
+{
+    if (parameterindex == WParameter::First) {
+        handler->tracking = value;
     }
 }
 
