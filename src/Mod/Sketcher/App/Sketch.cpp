@@ -266,8 +266,14 @@ int Sketch::setUpSketch(
     std::set<int> inGroupGeoIds;
     for (const auto& c : ConstraintList) {
         if (c->Type == Group || c->Type == Text) {
-            // Start from index 1, as 0 is the frame.
-            for (int i = 1; c->hasElement(i); ++i) {
+            // For rectangle-format Text (no "isTextHeight"), elements 0-3 are the frame
+            // and participate in the solver; only glyphs (i>=4) are excluded.
+            // For legacy Text and Group, all elements from index 1 onward are excluded.
+            int startIdx = 1;
+            if (c->Type == Text && !c->hasIsTextHeight()) {
+                startIdx = 4;
+            }
+            for (int i = startIdx; c->hasElement(i); ++i) {
                 inGroupGeoIds.insert(c->getGeoId(i));
             }
         }
@@ -2590,6 +2596,19 @@ int Sketch::addConstraint(const Constraint* constraint)
                 c.driving
             );
         } break;
+        case TextAspectRatio: {
+            int geo1 = checkGeoId(constraint->First);
+            int geo2 = checkGeoId(constraint->Second);
+            if (Geoms[geo1].type != Line || Geoms[geo2].type != Line) {
+                return -1;
+            }
+            GCS::Line& l1 = Lines[Geoms[geo1].index];
+            GCS::Line& l2 = Lines[Geoms[geo2].index];
+            int tag = ++ConstraintsCounter;
+            GCSsys.addConstraintEqualLengthRatio(l1, l2, constraint->getValue(), tag, c.driving);
+            rtn = ConstraintsCounter;
+            break;
+        }
         case Text:
         case Group: {
             if (constraint->isElementsEmpty()) {
@@ -5747,6 +5766,12 @@ void Sketch::captureGroupStates()
         // --- Capture Frame State ---
         int frameGeoId = c->getGeoId(0);
         preSolveGroupStates[frameGeoId] = getGroupLineState(frameGeoId);
+
+        // For rectangle-format Text, also capture the vLine (geoId 1).
+        if (c->Type == Text && !c->hasIsTextHeight() && c->hasElement(1)) {
+            int vGeoId = c->getGeoId(1);
+            preSolveGroupStates[vGeoId] = getGroupLineState(vGeoId);
+        }
     }
 }
 
@@ -5762,66 +5787,117 @@ void Sketch::applyGroupTransformations()
             continue;
         }
 
-        int frameGeoId = c->getGeoId(0);
+        int uGeoId = c->getGeoId(0);
 
-        // Get the "before" and "after" states of the frame line
-        GroupLineState preSolveFrame = preSolveGroupStates.at(frameGeoId);
-        GroupLineState postSolveFrame = getGroupLineState(frameGeoId);
+        // Get the "before" and "after" states of the uLine
+        GroupLineState preSolveU = preSolveGroupStates.at(uGeoId);
+        GroupLineState postSolveU = getGroupLineState(uGeoId);
 
-        // --- Calculate the Transformation ---
-        Base::Vector3d preVec = preSolveFrame.getVec();
-        Base::Vector3d postVec = postSolveFrame.getVec();
+        Base::Matrix4D transform;
+        const bool isRectText = (c->Type == Text && !c->hasIsTextHeight());
 
-        // Handle potential zero-length lines to avoid division by zero
-        double preLen = preVec.Length();
-        double scale = (preLen > Precision::Confusion()) ? postVec.Length() / preLen : 1.0;
+        if (isRectText && c->hasElement(1)
+            && preSolveGroupStates.count(c->getGeoId(1))) {
+            // --- Non-uniform anisotropic path for rectangle-format Text ---
+            int vGeoId = c->getGeoId(1);
+            GroupLineState preSolveV = preSolveGroupStates.at(vGeoId);
+            GroupLineState postSolveV = getGroupLineState(vGeoId);
 
-        // --- Create the Transformation Matrix ---
+            Base::Vector3d uPre = preSolveU.getVec();
+            Base::Vector3d vPre = preSolveV.getVec();
+            Base::Vector3d uPost = postSolveU.getVec();
+            Base::Vector3d vPost = postSolveV.getVec();
 
-        // 1. T1: Matrix to translate the group to the origin (using pre-solve start point)
-        Base::Matrix4D T1;  // Identity
-        T1[0][3] = -preSolveFrame.startPoint.x;
-        T1[1][3] = -preSolveFrame.startPoint.y;
-        T1[2][3] = 0;
+            double uPreLen = uPre.Length();
+            double vPreLen = vPre.Length();
+            double su = (uPreLen > Precision::Confusion()) ? uPost.Length() / uPreLen : 1.0;
+            double sv = (vPreLen > Precision::Confusion()) ? vPost.Length() / vPreLen : 1.0;
 
-        // 2. S: Matrix for scaling
-        Base::Matrix4D S;  // Identity
-        S[0][0] = scale;
-        S[1][1] = scale;
-        S[2][2] = scale;
+            Base::Vector3d uPreHat = (uPreLen > Precision::Confusion())
+                ? uPre / uPreLen : Base::Vector3d(1, 0, 0);
+            Base::Vector3d vPreHat = (vPreLen > Precision::Confusion())
+                ? vPre / vPreLen : Base::Vector3d(0, 1, 0);
+            double uPostLen = uPost.Length();
+            double vPostLen = vPost.Length();
+            Base::Vector3d uPostHat = (uPostLen > Precision::Confusion())
+                ? uPost / uPostLen : Base::Vector3d(1, 0, 0);
+            Base::Vector3d vPostHat = (vPostLen > Precision::Confusion())
+                ? vPost / vPostLen : Base::Vector3d(0, 1, 0);
 
-        // 3. R: Matrix for rotation
-        Base::Matrix4D R;  // Identity
-        if (preLen > Precision::Confusion()) {
-            // We can get the axis and angle from the two vectors and use rotLine
-            Base::Vector3d rotationAxis = preVec.Cross(postVec);
-            double rotationAngle = preVec.GetAngle(postVec);
-            // Only apply rotation if the vectors are not collinear
-            if (rotationAxis.Length() > Precision::Confusion()) {
-                R.rotLine(rotationAxis, rotationAngle);
+            // T1: translate pre-solve origin to world origin
+            Base::Matrix4D T1;
+            T1[0][3] = -preSolveU.startPoint.x;
+            T1[1][3] = -preSolveU.startPoint.y;
+
+            // Rpre_T: transpose of pre-solve rotation (maps world → pre-solve local)
+            Base::Matrix4D Rpre_T;
+            Rpre_T[0][0] = uPreHat.x;  Rpre_T[0][1] = uPreHat.y;  Rpre_T[0][2] = 0;
+            Rpre_T[1][0] = vPreHat.x;  Rpre_T[1][1] = vPreHat.y;  Rpre_T[1][2] = 0;
+            Rpre_T[2][0] = 0;           Rpre_T[2][1] = 0;           Rpre_T[2][2] = 1;
+
+            // S: non-uniform scale in local frame
+            Base::Matrix4D S;
+            S[0][0] = su;
+            S[1][1] = sv;
+            S[2][2] = 1.0;
+
+            // Rpost: post-solve rotation (maps post-solve local → world)
+            Base::Matrix4D Rpost;
+            Rpost[0][0] = uPostHat.x;  Rpost[0][1] = vPostHat.x;  Rpost[0][2] = 0;
+            Rpost[1][0] = uPostHat.y;  Rpost[1][1] = vPostHat.y;  Rpost[1][2] = 0;
+            Rpost[2][0] = 0;            Rpost[2][1] = 0;            Rpost[2][2] = 1;
+
+            // T2: translate to post-solve origin
+            Base::Matrix4D T2;
+            T2[0][3] = postSolveU.startPoint.x;
+            T2[1][3] = postSolveU.startPoint.y;
+
+            transform = T2 * Rpost * S * Rpre_T * T1;
+        }
+        else {
+            // --- Uniform (isotropic) path for Group and legacy Text ---
+            Base::Vector3d preVec = preSolveU.getVec();
+            Base::Vector3d postVec = postSolveU.getVec();
+
+            double preLen = preVec.Length();
+            double scale = (preLen > Precision::Confusion()) ? postVec.Length() / preLen : 1.0;
+
+            Base::Matrix4D T1;
+            T1[0][3] = -preSolveU.startPoint.x;
+            T1[1][3] = -preSolveU.startPoint.y;
+            T1[2][3] = 0;
+
+            Base::Matrix4D S;
+            S[0][0] = scale;
+            S[1][1] = scale;
+            S[2][2] = scale;
+
+            Base::Matrix4D R;
+            if (preLen > Precision::Confusion()) {
+                Base::Vector3d rotationAxis = preVec.Cross(postVec);
+                double rotationAngle = preVec.GetAngle(postVec);
+                if (rotationAxis.Length() > Precision::Confusion()) {
+                    R.rotLine(rotationAxis, rotationAngle);
+                }
             }
+
+            Base::Matrix4D T2;
+            T2[0][3] = postSolveU.startPoint.x;
+            T2[1][3] = postSolveU.startPoint.y;
+            T2[2][3] = 0;
+
+            transform = T2 * R * S * T1;
         }
 
-        // 4. T2: Matrix to translate the group to its new final position
-        Base::Matrix4D T2;  // Identity
-        T2[0][3] = postSolveFrame.startPoint.x;
-        T2[1][3] = postSolveFrame.startPoint.y;
-        T2[2][3] = 0;
-
-        // 5. Combine the matrices in the correct order: T_final = T2 * R * S * T1
-        Base::Matrix4D transform = T2 * R * S * T1;
-
-        // --- Loop through grouped elements and apply the transform ---
-        for (int i = 1; c->hasElement(i); ++i) {
+        // --- Loop through slave elements and apply the transform ---
+        const int slaveStart = isRectText ? 4 : 1;
+        for (int i = slaveStart; c->hasElement(i); ++i) {
             int groupedGeoId = c->getGeoId(i);
             if (groupedGeoId == GeoEnum::GeoUndef) {
                 continue;
             }
 
-            // Get the slave's current (pre-solve) state
             Part::Geometry* groupedGeo = Geoms[checkGeoId(groupedGeoId)].geo;
-
-            // Apply the calculated transformation
             groupedGeo->transform(transform);
         }
     }

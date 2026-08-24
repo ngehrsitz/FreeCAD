@@ -472,6 +472,7 @@ public:
             case Sketcher::Symmetric:
             case Sketcher::Group:
             case Sketcher::Text:
+            case Sketcher::TextAspectRatio:
                 return true;
             case Sketcher::Distance:
             case Sketcher::DistanceX:

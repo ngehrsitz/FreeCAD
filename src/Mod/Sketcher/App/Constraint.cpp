@@ -700,6 +700,34 @@ void Constraint::setIsTextHeight(bool isHeight)
     MetaData = j.dump();
 }
 
+bool Constraint::hasIsTextHeight() const
+{
+    if (MetaData.empty()) {
+        return false;
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        return j.contains("isTextHeight");
+    }
+    catch (...) {
+    }
+    return false;
+}
+
+void Constraint::removeIsTextHeight()
+{
+    if (MetaData.empty()) {
+        return;
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        j.erase("isTextHeight");
+        MetaData = j.dump();
+    }
+    catch (...) {
+    }
+}
+
 std::string Constraint::getTextDirection() const
 {
     if (MetaData.empty()) {
