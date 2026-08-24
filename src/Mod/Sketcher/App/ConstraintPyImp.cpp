@@ -186,9 +186,7 @@ int ConstraintPy::PyInit(PyObject* args, PyObject* /*kwd*/)
             if (py_is_height && PyBool_Check(py_is_height)) {
                 constraint->setIsTextHeight(py_is_height == Py_True);
             }
-            else {
-                constraint->setIsTextHeight(true);
-            }
+            // If omitted: leave metadata without "isTextHeight" key (rectangle format signal).
 
             return 0;  // Success!
         }
@@ -436,6 +434,10 @@ int ConstraintPy::PyInit(PyObject* args, PyObject* /*kwd*/)
             }
             else if (strcmp("Distance", ConstraintType) == 0) {
                 constraint->Type = Distance;
+                constraint->Second = SecondIndex;
+            }
+            else if (strcmp("TextAspectRatio", ConstraintType) == 0) {
+                constraint->Type = TextAspectRatio;
                 constraint->Second = SecondIndex;
             }
             else if (strcmp("DistanceX", ConstraintType) == 0) {
@@ -1234,4 +1236,13 @@ PyObject* ConstraintPy::getCustomAttributes(const char* /*attr*/) const
 int ConstraintPy::setCustomAttributes(const char* /*attr*/, PyObject* /*obj*/)
 {
     return 0;
+}
+
+PyObject* ConstraintPy::hasIsTextHeight(PyObject* args) const
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    bool result = this->getConstraintPtr()->hasIsTextHeight();
+    return PyBool_FromLong(result ? 1 : 0);
 }

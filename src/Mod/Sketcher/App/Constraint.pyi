@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Base.Metadata import export
+from Base.Metadata import export, constmethod
 from Base.Persistence import Persistence
 from typing import Final
 
@@ -60,3 +60,8 @@ class Constraint(Persistence):
 
     LabelPosition: Final[float] = 0.0
     """Label position"""
+
+    @constmethod
+    def hasIsTextHeight(self) -> bool:
+        """Return True if the Text constraint metadata contains the 'isTextHeight' key (legacy single-line format)."""
+        ...
