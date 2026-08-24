@@ -688,7 +688,7 @@ void SketchObject::generateId(const Part::Geometry* geo)
 }
 // clang-format off
 
-int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string& newFont, bool isHeight, bool isConstruction)
+int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string& newFont, bool isHeight, bool isConstruction, const std::string& direction, double tracking)
 {
 ;    // no need to check input data validity as this is an sketchobject managed operation.
     Base::StateLocker lock(managedoperation, true);
@@ -711,6 +711,8 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
     const std::string oldText = constr->getText();
     const std::string oldFont = constr->getFont();
     const bool oldIsHeight = constr->getIsTextHeight();
+    const std::string oldDirection = constr->getTextDirection();
+    const double oldTracking = constr->getTextTracking();
     int handleGeoId = constr->getGeoId(0);
     int firstTextGeoId = constr->getGeoId(1);
     bool hasExistingText = firstTextGeoId != GeoEnum::GeoUndef;
@@ -743,7 +745,7 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
 
     // Generate text geos based on new text/font :
     std::vector<std::unique_ptr<Part::Geometry>> newGeos;
-    std::vector<TopoDS_Shape> shapes = Part::makeTextWires(newText, newFont);
+    std::vector<TopoDS_Shape> shapes = Part::makeTextWires(newText, newFont, 1.0, tracking, direction);
     Part::transformAndConvertToGeometry(newGeos,
                                     shapes,
                                     line->getStartPoint(),
@@ -784,6 +786,8 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
     constr->setText(newText);
     constr->setFont(newFont);
     constr->setIsTextHeight(isHeight);
+    constr->setTextDirection(direction);
+    constr->setTextTracking(tracking);
 
     if (hasExistingText) {
         addConstraint(constr);
@@ -795,6 +799,8 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
         constr->setText(oldText);
         constr->setFont(oldFont);
         constr->setIsTextHeight(oldIsHeight);
+        constr->setTextDirection(oldDirection);
+        constr->setTextTracking(oldTracking);
     }
 
     return err;
