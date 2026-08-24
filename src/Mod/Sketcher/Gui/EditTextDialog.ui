@@ -54,6 +54,60 @@
        </item>
      </layout>
     </item>
+    <item row="3" column="0">
+     <widget class="QLabel" name="label_direction">
+      <property name="text">
+       <string>Direction</string>
+      </property>
+     </widget>
+    </item>
+    <item row="3" column="1">
+     <widget class="QComboBox" name="comboBox_direction">
+      <item>
+       <property name="text">
+        <string>Left to Right (LTR)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Right to Left (RTL)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Top to Bottom (TTB)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Bottom to Top (BTT)</string>
+       </property>
+      </item>
+     </widget>
+    </item>
+    <item row="4" column="0">
+     <widget class="QLabel" name="label_tracking">
+      <property name="text">
+       <string>Tracking</string>
+      </property>
+     </widget>
+    </item>
+    <item row="4" column="1">
+     <widget class="QDoubleSpinBox" name="doubleSpinBox_tracking">
+      <property name="minimum">
+       <double>-1000.000000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>1000.000000000000000</double>
+      </property>
+      <property name="singleStep">
+       <double>0.100000000000000</double>
+      </property>
+      <property name="decimals">
+       <number>3</number>
+      </property>
+     </widget>
+    </item>
     </layout>
    </item>
    <item>
