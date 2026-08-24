@@ -203,3 +203,12 @@ jobs:
           name: ${{ inputs.artifactBasename }}-Logs
           path: |
             ${{ env.logdir }}
+
+      - name: Upload portable build
+        if: "!inputs.skipBuild"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifactBasename }}-Build
+          # bin/ contains FreeCAD.exe + all DLLs (COPY_DEPEND flags at configure time)
+          path: ${{ env.builddir }}\bin\
+          retention-days: 14
