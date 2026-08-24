@@ -7626,7 +7626,8 @@ std::vector<TopoDS_Shape> makeTextWires(
     std::string& text,
     std::string& fontFile,
     double height,
-    double tracking
+    double tracking,
+    const std::string& direction
 )
 {
     if (text.empty()) {
@@ -7700,7 +7701,22 @@ std::vector<TopoDS_Shape> makeTextWires(
 
     auto* hbBuf = hb_buffer_create();
     hb_buffer_add_utf8(hbBuf, text.c_str(), -1, 0, -1);
-    hb_buffer_guess_segment_properties(hbBuf);
+
+    bool isVertical = false;
+    hb_direction_t hbDir = HB_DIRECTION_LTR;
+    if (direction == "rtl") {
+        hbDir = HB_DIRECTION_RTL;
+    }
+    else if (direction == "ttb") {
+        hbDir = HB_DIRECTION_TTB;
+        isVertical = true;
+    }
+    else if (direction == "btt") {
+        hbDir = HB_DIRECTION_BTT;
+        isVertical = true;
+    }
+    hb_buffer_set_direction(hbBuf, hbDir);
+    hb_buffer_guess_segment_properties(hbBuf);  // fills script/language without overriding direction
 
     hb_shape(hbFont, hbBuf, nullptr, 0);
 
@@ -7715,9 +7731,11 @@ std::vector<TopoDS_Shape> makeTextWires(
         FT_UInt glyphIndex = glyphInfos[i].codepoint;
         double xOffset = glyphPositions[i].x_offset;
         double xAdvance = glyphPositions[i].x_advance;
+        double yOffset = glyphPositions[i].y_offset;
+        double yAdvance = glyphPositions[i].y_advance;
 
         if (FT_Load_Glyph(ftFace, glyphIndex, ftLoadFlags) != 0) {
-            penPos += xAdvance;
+            penPos += isVertical ? yAdvance : xAdvance;
             currentTracking += tracking;
             continue;
         }
@@ -7733,7 +7751,22 @@ std::vector<TopoDS_Shape> makeTextWires(
             if (!ctx.Wires.empty()) {
                 gp_Trsf charTransform;
                 charTransform.SetScale(gp::Origin(), scaleFactor);
-                gp_Vec translation((penPos + xOffset) * scaleFactor + currentTracking, 0.0, 0.0);
+                gp_Vec translation;
+                if (isVertical) {
+                    // x_offset centers the glyph; y_advance is negative for TTB (pen moves down).
+                    translation = gp_Vec(
+                        xOffset * scaleFactor,
+                        (penPos + yOffset) * scaleFactor + currentTracking,
+                        0.0
+                    );
+                }
+                else {
+                    translation = gp_Vec(
+                        (penPos + xOffset) * scaleFactor + currentTracking,
+                        0.0,
+                        0.0
+                    );
+                }
                 charTransform.SetTranslationPart(translation);
 
                 for (const auto& wire : ctx.Wires) {
@@ -7746,7 +7779,7 @@ std::vector<TopoDS_Shape> makeTextWires(
             }
         }
 
-        penPos += xAdvance;
+        penPos += isVertical ? yAdvance : xAdvance;
         currentTracking += tracking;
     }
 
