@@ -1095,6 +1095,8 @@ protected:
     /// Derive the signed-constraint orientations of a legacy sketch from its stored geometry.
     /// Must be called once the external geometry of the sketch is available.
     void migrateConstraintOrientations();
+    /// Convert legacy single-line Text constraints to the four-line rectangle format.
+    void migrateLegacyTextConstraints();
 
     static void appendConstraintsMsg(
         const std::vector<int>& vector,

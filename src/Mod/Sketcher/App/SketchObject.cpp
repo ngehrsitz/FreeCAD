@@ -688,6 +688,171 @@ void SketchObject::generateId(const Part::Geometry* geo)
 }
 // clang-format off
 
+void SketchObject::migrateLegacyTextConstraints()
+{
+    struct MigData {
+        int constrIdx, uId;
+        Base::Vector3d p0, p01, p1, p11;
+        double baseAspect;
+    };
+    std::vector<MigData> migs;
+
+    const auto& constrs = Constraints.getValues();
+    for (int ci = 0; ci < (int)constrs.size(); ++ci) {
+        const Constraint* c = constrs[ci];
+        if (c->Type != Text || !c->hasIsTextHeight()) {
+            continue;
+        }
+        int uId = c->getGeoId(0);
+        if (uId == GeoEnum::GeoUndef) {
+            continue;
+        }
+        const auto* seg = dynamic_cast<const Part::GeomLineSegment*>(getGeometry(uId));
+        if (!seg) {
+            continue;
+        }
+        Base::Vector3d p0 = seg->getStartPoint();
+        Base::Vector3d p1 = seg->getEndPoint();
+        Base::Vector3d uVec = p1 - p0;
+        double uLen = uVec.Length();
+        if (uLen < Precision::Confusion()) {
+            continue;
+        }
+        Base::Vector3d uHat = uVec / uLen;
+        Base::Vector3d vHat(-uHat.y, uHat.x, 0.0);
+
+        // Estimate height/width ratio from glyph bounding box in local uLine frame
+        double uMin_g =  1e30, uMax_g = -1e30;
+        double vMin_g =  1e30, vMax_g = -1e30;
+        bool hasPts = false;
+        for (int ei = 1; c->hasElement(ei); ++ei) {
+            int gId = c->getGeoId(ei);
+            if (gId == GeoEnum::GeoUndef) {
+                continue;
+            }
+            const Part::Geometry* geo = getGeometry(gId);
+            if (!geo) {
+                continue;
+            }
+            auto sample = [&](const Base::Vector3d& pt) {
+                double lu = (pt - p0).Dot(uHat);
+                double lv = (pt - p0).Dot(vHat);
+                if (!hasPts) {
+                    uMin_g = uMax_g = lu; vMin_g = vMax_g = lv; hasPts = true;
+                }
+                else {
+                    if (lu < uMin_g) uMin_g = lu; if (lu > uMax_g) uMax_g = lu;
+                    if (lv < vMin_g) vMin_g = lv; if (lv > vMax_g) vMax_g = lv;
+                }
+            };
+            if (geo->is<Part::GeomLineSegment>()) {
+                const auto* ls = static_cast<const Part::GeomLineSegment*>(geo);
+                sample(ls->getStartPoint()); sample(ls->getEndPoint());
+            }
+            else if (geo->is<Part::GeomArcOfCircle>()) {
+                const auto* arc = static_cast<const Part::GeomArcOfCircle*>(geo);
+                sample(arc->getStartPoint(true)); sample(arc->getEndPoint(true));
+            }
+        }
+        double bw = uMax_g - uMin_g, bh = vMax_g - vMin_g;
+        double baseAspect = (hasPts && bw > Precision::Confusion() && bh > Precision::Confusion())
+            ? bh / bw : 1.0;
+
+        Base::Vector3d vOff = vHat * (uLen * baseAspect);
+        migs.push_back({ci, uId, p0, p0 + vOff, p1, p1 + vOff, baseAspect});
+    }
+
+    if (migs.empty()) {
+        return;
+    }
+
+    Base::Console().Message(
+        "Sketcher: Migrating %d legacy Text constraint(s) in '%s' to rectangle format.\n",
+        (int)migs.size(), getNameInDocument());
+
+    // Batch-add geometry (3 new construction lines per migration)
+    auto geoList = Geometry.getValues();
+    int baseIdx = (int)geoList.size();
+    std::vector<std::unique_ptr<Part::GeomLineSegment>> newSegs;
+    newSegs.reserve(migs.size() * 3);
+
+    auto mkSeg = [&](const Base::Vector3d& a, const Base::Vector3d& b) {
+        auto seg = std::make_unique<Part::GeomLineSegment>();
+        seg->setPoints(a, b);
+        GeometryFacade::setConstruction(seg.get(), true);
+        return seg;
+    };
+    for (auto& m : migs) {
+        newSegs.push_back(mkSeg(m.p0, m.p01));  // vLine
+        newSegs.push_back(mkSeg(m.p01, m.p11)); // line3
+        newSegs.push_back(mkSeg(m.p1, m.p11));  // line4
+    }
+    for (auto& seg : newSegs) {
+        geoList.push_back(seg.get());
+    }
+    Geometry.setValues(geoList);  // clones new segs; existing ptrs reused by pointer identity
+
+    // Batch-add structural constraints and update Text constraint element lists
+    auto constrList = Constraints.getValues();  // copy of raw ptrs (property still owns objects)
+    std::vector<Constraint*> addedConstrs;
+
+    for (int i = 0; i < (int)migs.size(); ++i) {
+        auto& m = migs[i];
+        int vId  = baseIdx + i * 3;
+        int l3Id = baseIdx + i * 3 + 1;
+        int l4Id = baseIdx + i * 3 + 2;
+        int uId  = m.uId;
+
+        auto push = [&](Constraint* c) {
+            addedConstrs.push_back(c);
+            constrList.push_back(c);
+        };
+        auto mkC2 = [&](ConstraintType t, int f, PointPos fp, int s, PointPos sp) {
+            auto* c = new Constraint();
+            c->Type = t; c->First = f; c->FirstPos = fp; c->Second = s; c->SecondPos = sp;
+            push(c);
+        };
+        auto mkC1 = [&](ConstraintType t, int f, int s) {
+            auto* c = new Constraint(); c->Type = t; c->First = f; c->Second = s; push(c);
+        };
+
+        mkC2(Coincident, uId,  PointPos::start, vId,  PointPos::start);
+        mkC2(Coincident, uId,  PointPos::end,   l4Id, PointPos::start);
+        mkC2(Coincident, vId,  PointPos::end,   l3Id, PointPos::start);
+        mkC2(Coincident, l3Id, PointPos::end,   l4Id, PointPos::end);
+        mkC1(Equal,        uId,  l3Id);
+        mkC1(Equal,        vId,  l4Id);
+        mkC1(Parallel,     uId,  l3Id);
+        mkC1(Parallel,     vId,  l4Id);
+        mkC1(Perpendicular, uId, vId);
+
+        auto* ar = new Constraint();
+        ar->Type = TextAspectRatio; ar->First = uId; ar->Second = vId;
+        ar->setValue(m.baseAspect);
+        push(ar);
+
+        // Update Text constraint element list: [uId, vId, l3Id, l4Id, glyph₁, glyph₂, ...]
+        Constraint* tc = constrList[m.constrIdx];
+        std::vector<GeoElementId> glyphElems;
+        for (int ei = 1; tc->hasElement(ei); ++ei) {
+            int g = tc->getGeoId(ei);
+            if (g != GeoEnum::GeoUndef) {
+                glyphElems.emplace_back(g);
+            }
+        }
+        tc->truncateElements(0);
+        for (int id : {uId, vId, l3Id, l4Id}) { tc->addElement(GeoElementId(id)); }
+        for (auto& e : glyphElems)              { tc->addElement(e); }
+        tc->removeIsTextHeight();
+    }
+
+    Constraints.setValues(constrList);  // clones all entries; existing objects are replaced
+
+    for (auto* c : addedConstrs) {
+        delete c;  // property already cloned these
+    }
+}
+
 int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string& newFont, bool isHeight, bool isConstruction, const std::string& direction, double tracking)
 {
 ;    // no need to check input data validity as this is an sketchobject managed operation.
@@ -707,31 +872,43 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
         return -1;
     }
 
+    // Detect format: rectangle (no "isTextHeight" key) vs legacy (single handle line)
+    const bool isRectFormat = !constr->hasIsTextHeight();
+    const int firstSlaveIdx = isRectFormat ? 4 : 1;
+
     // First we replace the old geometries by the new text.
     const std::string oldText = constr->getText();
     const std::string oldFont = constr->getFont();
     const bool oldIsHeight = constr->getIsTextHeight();
+    const bool oldHasIsHeight = constr->hasIsTextHeight();
     const std::string oldDirection = constr->getTextDirection();
     const double oldTracking = constr->getTextTracking();
-    int handleGeoId = constr->getGeoId(0);
-    int firstTextGeoId = constr->getGeoId(1);
+
+    int handleGeoId = constr->getGeoId(0);  // uLine for rect, handle for legacy
+
+    // For rectangle format, capture all frame GeoIds before deleting glyphs
+    int vGeoId   = isRectFormat && constr->hasElement(1) ? constr->getGeoId(1) : GeoEnum::GeoUndef;
+    int l3GeoId  = isRectFormat && constr->hasElement(2) ? constr->getGeoId(2) : GeoEnum::GeoUndef;
+    int l4GeoId  = isRectFormat && constr->hasElement(3) ? constr->getGeoId(3) : GeoEnum::GeoUndef;
+
+    int firstTextGeoId = constr->hasElement(firstSlaveIdx) ? constr->getGeoId(firstSlaveIdx) : GeoEnum::GeoUndef;
     bool hasExistingText = firstTextGeoId != GeoEnum::GeoUndef;
-    bool handleLast = handleGeoId > firstTextGeoId;
+    bool handleLast = !isRectFormat && handleGeoId > firstTextGeoId;
 
     if (hasExistingText) {
         // Check if text is construction or normal geos
         auto* geo1 = getGeometry(firstTextGeoId);
         isConstruction = GeometryFacade::getConstruction(geo1);
 
-        // Delete all the old text geos. Not the handle!
+        // Delete only slave geos (glyphs), leaving frame geometry intact
         std::vector<int> geoIdsToDelete;
-        for (int i = 1; constr->hasElement(i); ++i) {
+        for (int i = firstSlaveIdx; constr->hasElement(i); ++i) {
             if (constr->getGeoId(i) == GeoEnum::GeoUndef) {
                 continue;
             }
             geoIdsToDelete.push_back(constr->getGeoId(i));
             if (handleLast) {
-                --handleGeoId; // handle line is added after all text geos.
+                --handleGeoId;
             }
         }
 
@@ -746,25 +923,23 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
     // Generate text geos based on new text/font :
     std::vector<std::unique_ptr<Part::Geometry>> newGeos;
     std::vector<TopoDS_Shape> shapes = Part::makeTextWires(newText, newFont, 1.0, tracking, direction);
+    // Rectangle format: uLine always drives width (isHeight=false)
     Part::transformAndConvertToGeometry(newGeos,
                                     shapes,
                                     line->getStartPoint(),
                                     line->getEndPoint(),
-                                    isHeight);
+                                    isRectFormat ? false : isHeight);
 
     // Add the geometries to sketch
     int lastGeoid = getHighestCurveIndex();
     std::vector<Part::Geometry*> newGeosRawPtrs;
     newGeosRawPtrs.reserve(newGeos.size());
 
-    // Populate the raw pointer vector and release ownership from the unique_ptrs.
     for (auto& geo_ptr : newGeos) {
         if (isConstruction) {
             Sketcher::GeometryFacade::setConstruction(geo_ptr.get(), isConstruction);
         }
-        // Add the raw pointer to the new vector.
         newGeosRawPtrs.push_back(geo_ptr.get());
-        // Release ownership from the unique_ptr. The SketchObject will now manage this memory.
         geo_ptr.release();
     }
     newGeos.clear();
@@ -777,15 +952,26 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
     if (hasExistingText) {
         constr = new Constraint();
         constr->Type = Text;
-        constr->truncateElements(0); // remove the First/Second/Third that are created automatically
-        constr->addElement(GeoElementId(handleGeoId));
+        constr->truncateElements(0);
+        if (isRectFormat) {
+            // Re-add the four frame elements (GeoIds are unchanged since glyphs had higher IDs)
+            constr->addElement(GeoElementId(handleGeoId));
+            if (vGeoId  != GeoEnum::GeoUndef) { constr->addElement(GeoElementId(vGeoId));  }
+            if (l3GeoId != GeoEnum::GeoUndef) { constr->addElement(GeoElementId(l3GeoId)); }
+            if (l4GeoId != GeoEnum::GeoUndef) { constr->addElement(GeoElementId(l4GeoId)); }
+        }
+        else {
+            constr->addElement(GeoElementId(handleGeoId));
+        }
     }
     for (int i = lastGeoid + 1; i <= newLastGeoid; ++i) {
         constr->addElement(GeoElementId(i));
     }
     constr->setText(newText);
     constr->setFont(newFont);
-    constr->setIsTextHeight(isHeight);
+    if (!isRectFormat) {
+        constr->setIsTextHeight(isHeight);  // legacy format only
+    }
     constr->setTextDirection(direction);
     constr->setTextTracking(tracking);
 
@@ -798,7 +984,9 @@ int SketchObject::setTextAndFont(int ConstrId, std::string& newText, std::string
     if (err) {
         constr->setText(oldText);
         constr->setFont(oldFont);
-        constr->setIsTextHeight(oldIsHeight);
+        if (oldHasIsHeight) {
+            constr->setIsTextHeight(oldIsHeight);
+        }
         constr->setTextDirection(oldDirection);
         constr->setTextTracking(oldTracking);
     }
@@ -1406,6 +1594,8 @@ void SketchObject::onSketchRestore()
         // geometry the constraints reference, and projected external geometry does not exist
         // before it is rebuilt or accepted.
         migrateConstraintOrientations();
+
+        migrateLegacyTextConstraints();
 
         synchroniseGeometryState();
         // this may happen when saving a sketch directly in edit mode
