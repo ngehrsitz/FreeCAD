@@ -27,6 +27,10 @@
 
 #include <QMap>
 
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
+#include <Precision.hxx>
+
 #include <Gui/BitmapFactory.h>
 #include <Gui/Notifications.h>
 #include <Gui/Command.h>
@@ -133,48 +137,129 @@ private:
         try {
             openCommand(QT_TRANSLATE_NOOP("Command", "Add sketch Text"));
 
-            // Add the Handle Line
+            // Compute natural aspect ratio (height/width) from cached glyph shapes.
+            double baseAspect = 1.0;
+            if (!cachedBaseShapes.empty()) {
+                Bnd_Box bbox;
+                for (const TopoDS_Shape& s : cachedBaseShapes) {
+                    BRepBndLib::Add(s, bbox);
+                }
+                if (!bbox.IsVoid()) {
+                    double xmin, ymin, zmin, xmax, ymax, zmax;
+                    bbox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+                    double bw = xmax - xmin;
+                    double bh = ymax - ymin;
+                    if (bw > Precision::Confusion()) {
+                        baseAspect = bh / bw;
+                    }
+                }
+            }
+
+            // Build the four-line rectangle frame:
+            //   uLine (bottom): startPoint → endPoint
+            //   vLine (left):   startPoint → startPoint + vOff
+            //   line3 (top):    startPoint+vOff → endPoint+vOff
+            //   line4 (right):  endPoint → endPoint+vOff
+            Base::Vector2d uVec = endPoint - startPoint;
+            double uLen = uVec.Length();
+            Base::Vector2d perpUnit(-uVec.y / uLen, uVec.x / uLen);
+            Base::Vector2d vOff = perpUnit * (uLen * baseAspect);
+
+            Base::Vector2d p00 = startPoint;
+            Base::Vector2d p10 = endPoint;
+            Base::Vector2d p01 = startPoint + vOff;
+            Base::Vector2d p11 = endPoint + vOff;
+
+            // uLine (element 0)
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
-                "addGeometry(Part.LineSegment(App.Vector(%f, %f,0), App.Vector(%f, %f,0)), True)",
-                startPoint.x,
-                startPoint.y,
-                endPoint.x,
-                endPoint.y
-            );
-            handleId = getHighestCurveIndex();
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p00.x, p00.y, p10.x, p10.y);
+            int uId = getHighestCurveIndex();
+            handleId = uId;
+
+            // vLine (element 1)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p00.x, p00.y, p01.x, p01.y);
+            int vId = getHighestCurveIndex();
+
+            // line3 / top (element 2)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p01.x, p01.y, p11.x, p11.y);
+            int l3Id = getHighestCurveIndex();
+
+            // line4 / right (element 3)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p10.x, p10.y, p11.x, p11.y);
+            int l4Id = getHighestCurveIndex();
+
+            // Structural corner coincidences
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,1,%d,1))", uId, vId);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,2,%d,1))", uId, l4Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,2,%d,1))", vId, l3Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,2,%d,2))", l3Id, l4Id);
+
+            // Equal + Parallel (rectangle structure)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Equal',%d,%d))", uId, l3Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Equal',%d,%d))", vId, l4Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Parallel',%d,%d))", uId, l3Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Parallel',%d,%d))", vId, l4Id);
+
+            // Perpendicular at origin (right-angle corner)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Perpendicular',%d,%d))", uId, vId);
+
+            // TextAspectRatio: length(vLine) = baseAspect * length(uLine)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('TextAspectRatio',%d,%d,%f))",
+                uId, vId, baseAspect);
 
             std::string escText = escapeForPython(text);
             std::string escFontPath = escapeForPython(font);
             std::string escDirection = escapeForPython(direction);
-            bool isHeight = constructionMethod() == ConstructionMethod::Height;
             const char* constrBoolStr = isConstructionMode() ? "True" : "False";
-            const char* heightBoolStr = isHeight ? "True" : "False";
 
-            // Add the 'Text' Constraint (Empty)
-            // We initialize the constraint containing ONLY the handle (element 0).
-            // We do not add the text geometry manually to avoid floating-point precision loss
-            // associated with Python serialization.
+            // Text constraint — four frame elements, no isHeight (rectangle format signal)
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
-                "addConstraint(Sketcher.Constraint('Text', [%d, 0], '%s', '%s', %s))",
-                handleId,
+                "addConstraint(Sketcher.Constraint('Text',[%d,0,%d,1,%d,2,%d,3],'%s','%s'))",
+                uId, vId, l3Id, l4Id,
                 escText.c_str(),
-                escFontPath.c_str(),
-                heightBoolStr
+                escFontPath.c_str()
             );
 
-            // Generate Text Geometry by calling setTextAndFont on the new constraint.
-            // This triggers the C++ logic to generate the exact geometry and insert it
-            // into the sketch, ensuring closed wires and perfect precision.
+            // Generate glyphs; setTextAndFont detects rectangle format via absent isTextHeight
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
-                "setTextAndFont(len(App.ActiveDocument.getObject('%s').Constraints)-1, '%s', '%s', "
-                "%s, %s, '%s', %f)",
+                "setTextAndFont(len(App.ActiveDocument.getObject('%s').Constraints)-1,'%s','%s',"
+                "False,%s,'%s',%f)",
                 getSketchObject()->getNameInDocument(),
                 escText.c_str(),
                 escFontPath.c_str(),
-                heightBoolStr,
                 constrBoolStr,
                 escDirection.c_str(),
                 tracking
