@@ -263,6 +263,10 @@ public:
     void setFont(const std::string& font);
     bool getIsTextHeight() const;
     void setIsTextHeight(bool val);
+    std::string getTextDirection() const;
+    void setTextDirection(const std::string& direction);
+    double getTextTracking() const;
+    void setTextTracking(double tracking);
 
 #ifdef SKETCHER_CONSTRAINT_USE_LEGACY_ELEMENTS
     // Deprecated, use getElement/setElement instead
