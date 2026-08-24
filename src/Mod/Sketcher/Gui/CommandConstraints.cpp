@@ -11543,6 +11543,119 @@ bool CmdSketcherToggleActiveConstraint::isActive()
     return isCreateConstraintActive(getActiveGuiDocument());
 }
 
+// ============================================================================
+// CmdSketcherConstrainTextAspect
+// ============================================================================
+
+DEF_STD_CMD_A(CmdSketcherConstrainTextAspect)
+
+CmdSketcherConstrainTextAspect::CmdSketcherConstrainTextAspect()
+    : Command("Sketcher_ConstrainTextAspect")
+{
+    sAppModule    = "Sketcher";
+    sGroup        = "Sketcher";
+    sMenuText     = QT_TR_NOOP("Toggle text aspect lock");
+    sToolTipText  = QT_TR_NOOP("Add or remove the aspect-ratio lock on the selected text");
+    sWhatsThis    = "Sketcher_ConstrainTextAspect";
+    sStatusTip    = sToolTipText;
+    sPixmap       = "Sketcher_ConstrainEqual";
+    sAccel        = "";
+    eType         = ForEdit;
+}
+
+void CmdSketcherConstrainTextAspect::activated(int /*iMsg*/)
+{
+    std::vector<Gui::SelectionObject> selection = getSelection().getSelectionEx();
+    if (selection.empty() || !selection[0].isObjectTypeOf(Sketcher::SketchObject::getClassTypeId())) {
+        return;
+    }
+    auto* Obj = static_cast<Sketcher::SketchObject*>(selection[0].getObject());
+    const std::vector<std::string>& subNames = selection[0].getSubNames();
+
+    const std::vector<Constraint*>& vals = Obj->Constraints.getValues();
+
+    // Collect rectangle-format Text constraint indices from selection
+    std::vector<int> selTextConstrIds;
+    for (const std::string& sub : subNames) {
+        if (sub.rfind("Constraint", 0) != 0) {
+            continue;
+        }
+        int idx = std::atoi(sub.c_str() + 10) - 1;
+        if (idx >= 0 && idx < (int)vals.size()
+            && vals[idx]->Type == Sketcher::Text
+            && !vals[idx]->hasIsTextHeight()) {
+            selTextConstrIds.push_back(idx);
+        }
+    }
+
+    if (selTextConstrIds.empty()) {
+        // Fall back: first rectangle-format Text constraint in the sketch
+        for (int i = 0; i < (int)vals.size(); ++i) {
+            if (vals[i]->Type == Sketcher::Text && !vals[i]->hasIsTextHeight()) {
+                selTextConstrIds.push_back(i);
+                break;
+            }
+        }
+    }
+
+    if (selTextConstrIds.empty()) {
+        return;
+    }
+
+    openCommand(QT_TRANSLATE_NOOP("Command", "Toggle text aspect lock"));
+
+    for (int textConstrIdx : selTextConstrIds) {
+        const Constraint* tc = vals[textConstrIdx];
+        int uId = tc->getGeoId(0);
+        int vId = tc->getGeoId(1);
+        if (uId == GeoEnum::GeoUndef || vId == GeoEnum::GeoUndef) {
+            continue;
+        }
+
+        // Find existing TextAspectRatio for this uLine/vLine pair
+        int arIdx = -1;
+        for (int i = 0; i < (int)vals.size(); ++i) {
+            if (vals[i]->Type == Sketcher::TextAspectRatio
+                && vals[i]->First == uId && vals[i]->Second == vId) {
+                arIdx = i;
+                break;
+            }
+        }
+
+        if (arIdx >= 0) {
+            // Unlock: remove the aspect-ratio constraint
+            Gui::cmdAppObjectArgs(Obj, "delConstraint(%d)", arIdx);
+        }
+        else {
+            // Lock: compute ratio from current geometry
+            double ratio = 1.0;
+            const auto* uSeg = dynamic_cast<const Part::GeomLineSegment*>(Obj->getGeometry(uId));
+            const auto* vSeg = dynamic_cast<const Part::GeomLineSegment*>(Obj->getGeometry(vId));
+            if (uSeg && vSeg) {
+                double uLen = (uSeg->getEndPoint() - uSeg->getStartPoint()).Length();
+                double vLen = (vSeg->getEndPoint() - vSeg->getStartPoint()).Length();
+                if (uLen > Precision::Confusion()) {
+                    ratio = vLen / uLen;
+                }
+            }
+            Gui::cmdAppObjectArgs(
+                Obj,
+                "addConstraint(Sketcher.Constraint('TextAspectRatio',%d,%d,%f))",
+                uId, vId, ratio
+            );
+        }
+    }
+
+    commitCommand();
+    tryAutoRecompute(Obj);
+    getSelection().clearSelection();
+}
+
+bool CmdSketcherConstrainTextAspect::isActive()
+{
+    return isCreateConstraintActive(getActiveGuiDocument());
+}
+
 void CreateSketcherCommandsConstraints()
 {
     Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
@@ -11572,6 +11685,7 @@ void CreateSketcherCommandsConstraints()
     rcCmdMgr.addCommand(new CmdSketcherConstrainSymmetric());
     rcCmdMgr.addCommand(new CmdSketcherConstrainSnellsLaw());
     rcCmdMgr.addCommand(new CmdSketcherConstrainGroup());
+    rcCmdMgr.addCommand(new CmdSketcherConstrainTextAspect());
     rcCmdMgr.addCommand(new CmdSketcherChangeDimensionConstraint());
     rcCmdMgr.addCommand(new CmdSketcherToggleDrivingConstraint());
     rcCmdMgr.addCommand(new CmdSketcherToggleActiveConstraint());
