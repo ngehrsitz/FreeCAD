@@ -410,19 +410,28 @@ class SketchObject(Part2DObject):
         ...
 
     def setTextAndFont(
-        self, constraint: int, text: str, font: str, isheight: bool, isConstruction: bool
+        self,
+        constraint: int,
+        text: str,
+        font: str,
+        isheight: bool,
+        isConstruction: bool = False,
+        direction: str = "ltr",
+        tracking: float = 0.0,
     ) -> None:
         """
         Set the text and font of a Text constraint.
 
-        setTextAndFont(constraint: int, text: str, font: str, isHeight: bool, isConstruction: bool)
+        setTextAndFont(constraint: int, text: str, font: str, isHeight: bool, isConstruction: bool, direction: str, tracking: float)
 
             Args:
                 constraint: The index of the Text constraint.
                 text: The text string to display.
                 font: The full path to the font file (.ttf, .otf, etc.).
                 isHeight: Is the line handle of the group the height of the text.
-                isConstruction: Are text geometry construction of not.
+                isConstruction: Are text geometry construction or not.
+                direction: Text direction: "ltr", "rtl", "ttb", or "btt".
+                tracking: Additional spacing between characters (in model units).
         """
         ...
 

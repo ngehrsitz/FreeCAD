@@ -363,7 +363,9 @@ public:
         std::string& newText,
         std::string& newFont,
         bool isHeight,
-        bool isConstruction = false
+        bool isConstruction = false,
+        const std::string& direction = "ltr",
+        double tracking = 0.0
     );
     /// set the driving status of this constraint and solve
     int setDriving(int ConstrId, bool isdriving);
