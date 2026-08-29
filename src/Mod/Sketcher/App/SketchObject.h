@@ -363,7 +363,9 @@ public:
         std::string& newText,
         std::string& newFont,
         bool isHeight,
-        bool isConstruction = false
+        bool isConstruction = false,
+        const std::string& direction = "ltr",
+        double tracking = 0.0
     );
     /// set the driving status of this constraint and solve
     int setDriving(int ConstrId, bool isdriving);
@@ -1093,6 +1095,8 @@ protected:
     /// Derive the signed-constraint orientations of a legacy sketch from its stored geometry.
     /// Must be called once the external geometry of the sketch is available.
     void migrateConstraintOrientations();
+    /// Convert legacy single-line Text constraints to the four-line rectangle format.
+    void migrateLegacyTextConstraints();
 
     static void appendConstraintsMsg(
         const std::vector<int>& vector,

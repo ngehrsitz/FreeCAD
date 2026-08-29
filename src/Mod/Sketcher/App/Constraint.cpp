@@ -699,3 +699,91 @@ void Constraint::setIsTextHeight(bool isHeight)
     j["isTextHeight"] = isHeight;
     MetaData = j.dump();
 }
+
+bool Constraint::hasIsTextHeight() const
+{
+    if (MetaData.empty()) {
+        return false;
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        return j.contains("isTextHeight");
+    }
+    catch (...) {
+    }
+    return false;
+}
+
+void Constraint::removeIsTextHeight()
+{
+    if (MetaData.empty()) {
+        return;
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        j.erase("isTextHeight");
+        MetaData = j.dump();
+    }
+    catch (...) {
+    }
+}
+
+std::string Constraint::getTextDirection() const
+{
+    if (MetaData.empty()) {
+        return "ltr";
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        if (j.contains("direction")) {
+            return j["direction"].get<std::string>();
+        }
+    }
+    catch (...) {
+    }
+    return "ltr";
+}
+
+void Constraint::setTextDirection(const std::string& direction)
+{
+    nlohmann::json j;
+    if (!MetaData.empty()) {
+        try {
+            j = nlohmann::json::parse(MetaData);
+        }
+        catch (...) {
+        }
+    }
+    j["direction"] = direction;
+    MetaData = j.dump();
+}
+
+double Constraint::getTextTracking() const
+{
+    if (MetaData.empty()) {
+        return 0.0;
+    }
+    try {
+        auto j = nlohmann::json::parse(MetaData);
+        if (j.contains("tracking")) {
+            return j["tracking"].get<double>();
+        }
+    }
+    catch (...) {
+    }
+    return 0.0;
+}
+
+void Constraint::setTextTracking(double tracking)
+{
+    nlohmann::json j;
+    if (!MetaData.empty()) {
+        try {
+            j = nlohmann::json::parse(MetaData);
+        }
+        catch (...) {
+        }
+    }
+    j["tracking"] = tracking;
+    MetaData = j.dump();
+}

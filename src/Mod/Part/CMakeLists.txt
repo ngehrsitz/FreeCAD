@@ -86,6 +86,7 @@ set(Part_tests
     parttests/TestPartMirror.py
     parttests/TestFaceMakerUnifiedPlanar.py
     parttests/TestFaceMakerUnifiedNonPlanar.py
+    parttests/text_tests.py
 )
 
 add_custom_target(PartScripts ALL SOURCES

@@ -213,6 +213,9 @@ jobs:
           builddir: ${{ env.builddir }}
           reportFile: ${{ env.reportdir }}${{ env.reportfilename }}
 
+      - name: Stage build artifact
+        run: DESTDIR=/tmp/FreeCAD-artifact cmake --install ${{ env.builddir }}
+
       - name: CMake Install
         uses: ./.github/workflows/actions/linux/install
         with:
@@ -247,6 +250,13 @@ jobs:
         with:
           path: ${{ env.CCACHE_DIR }}
           key: FC-${{ steps.genCacheKey.outputs.cacheKey }}-${{ github.ref }}-${{ github.run_id }}
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifactBasename }}-Build
+          path: /tmp/FreeCAD-artifact
+          retention-days: 14
 
       - name: Upload logs
         if: always()

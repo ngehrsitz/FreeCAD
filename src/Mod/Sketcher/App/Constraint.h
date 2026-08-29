@@ -73,6 +73,7 @@ enum ConstraintType : int
     Weight = 19,
     Group = 20,
     Text = 21,
+    TextAspectRatio = 22,
     NumConstraintTypes  // must be the last item!
 };
 
@@ -204,7 +205,8 @@ private:
          "Diameter",
          "Weight",
          "Group",
-         "Text"}};
+         "Text",
+         "TextAspectRatio"}};
     // clang-format on
 
     constexpr static std::array<const char*, InternalAlignmentType::NumInternalAlignmentType>
@@ -263,6 +265,12 @@ public:
     void setFont(const std::string& font);
     bool getIsTextHeight() const;
     void setIsTextHeight(bool val);
+    bool hasIsTextHeight() const;
+    void removeIsTextHeight();
+    std::string getTextDirection() const;
+    void setTextDirection(const std::string& direction);
+    double getTextTracking() const;
+    void setTextTracking(double tracking);
 
 #ifdef SKETCHER_CONSTRAINT_USE_LEGACY_ELEMENTS
     // Deprecated, use getElement/setElement instead

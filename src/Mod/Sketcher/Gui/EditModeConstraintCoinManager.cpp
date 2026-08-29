@@ -1624,6 +1624,7 @@ Restart:
                     asciiText->pnts.finishEditing();
                 } break;
                 case Coincident:  // nothing to do for coincident
+                case TextAspectRatio:
                 case None:
                 case InternalAlignment:
                 case NumConstraintTypes:

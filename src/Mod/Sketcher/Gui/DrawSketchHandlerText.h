@@ -27,6 +27,10 @@
 
 #include <QMap>
 
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
+#include <Precision.hxx>
+
 #include <Gui/BitmapFactory.h>
 #include <Gui/Notifications.h>
 #include <Gui/Command.h>
@@ -66,9 +70,9 @@ using DSHTextController = DrawSketchDefaultWidgetController<
     /*SelectModeT*/ StateMachines::TwoSeekEnd,
     /*PAutoConstraintSize =*/2,
     /*OnViewParametersT =*/OnViewParameters<4, 4>,  // NOLINT
-    /*WidgetParametersT =*/WidgetParameters<0, 0>,  // NOLINT
+    /*WidgetParametersT =*/WidgetParameters<1, 1>,  // NOLINT
     /*WidgetCheckboxesT =*/WidgetCheckboxes<0, 0>,  // NOLINT
-    /*WidgetComboboxesT =*/WidgetComboboxes<2, 2>,  // NOLINT
+    /*WidgetComboboxesT =*/WidgetComboboxes<3, 3>,  // NOLINT
     /*WidgetLineEditsT =*/WidgetLineEdits<1, 1>,    // NOLINT
     ConstructionMethods::TextConstructionMethod,
     /*bool PFirstComboboxIsConstructionMethod =*/true>;
@@ -90,8 +94,12 @@ public:
         , handleId(0)
         , text(QObject::tr("Text").toStdString())
         , font("")
+        , direction("ltr")
+        , tracking(0.0)
         , cachedTextName("")
         , cachedFontName("")
+        , cachedDirectionName("")
+        , cachedTracking(0.0)
         , cachedBaseShapes({}) {};
     ~DrawSketchHandlerText() override = default;
 
@@ -129,48 +137,132 @@ private:
         try {
             openCommand(QT_TRANSLATE_NOOP("Command", "Add sketch Text"));
 
-            // Add the Handle Line
+            // Compute natural aspect ratio (height/width) from cached glyph shapes.
+            double baseAspect = 1.0;
+            if (!cachedBaseShapes.empty()) {
+                Bnd_Box bbox;
+                for (const TopoDS_Shape& s : cachedBaseShapes) {
+                    BRepBndLib::Add(s, bbox);
+                }
+                if (!bbox.IsVoid()) {
+                    double xmin, ymin, zmin, xmax, ymax, zmax;
+                    bbox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+                    double bw = xmax - xmin;
+                    double bh = ymax - ymin;
+                    if (bw > Precision::Confusion()) {
+                        baseAspect = bh / bw;
+                    }
+                }
+            }
+
+            // Build the four-line rectangle frame:
+            //   uLine (bottom): startPoint → endPoint
+            //   vLine (left):   startPoint → startPoint + vOff
+            //   line3 (top):    startPoint+vOff → endPoint+vOff
+            //   line4 (right):  endPoint → endPoint+vOff
+            Base::Vector2d uVec = endPoint - startPoint;
+            double uLen = uVec.Length();
+            Base::Vector2d perpUnit(-uVec.y / uLen, uVec.x / uLen);
+            Base::Vector2d vOff = perpUnit * (uLen * baseAspect);
+
+            Base::Vector2d p00 = startPoint;
+            Base::Vector2d p10 = endPoint;
+            Base::Vector2d p01 = startPoint + vOff;
+            Base::Vector2d p11 = endPoint + vOff;
+
+            // uLine (element 0)
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
-                "addGeometry(Part.LineSegment(App.Vector(%f, %f,0), App.Vector(%f, %f,0)), True)",
-                startPoint.x,
-                startPoint.y,
-                endPoint.x,
-                endPoint.y
-            );
-            handleId = getHighestCurveIndex();
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p00.x, p00.y, p10.x, p10.y);
+            int uId = getHighestCurveIndex();
+            handleId = uId;
+
+            // vLine (element 1)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p00.x, p00.y, p01.x, p01.y);
+            int vId = getHighestCurveIndex();
+
+            // line3 / top (element 2)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p01.x, p01.y, p11.x, p11.y);
+            int l3Id = getHighestCurveIndex();
+
+            // line4 / right (element 3)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addGeometry(Part.LineSegment(App.Vector(%f,%f,0),App.Vector(%f,%f,0)), True)",
+                p10.x, p10.y, p11.x, p11.y);
+            int l4Id = getHighestCurveIndex();
+
+            // Structural corner coincidences
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,1,%d,1))", uId, vId);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,2,%d,1))", uId, l4Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,2,%d,1))", vId, l3Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Coincident',%d,2,%d,2))", l3Id, l4Id);
+
+            // Equal + Parallel (rectangle structure)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Equal',%d,%d))", uId, l3Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Equal',%d,%d))", vId, l4Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Parallel',%d,%d))", uId, l3Id);
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Parallel',%d,%d))", vId, l4Id);
+
+            // Perpendicular at origin (right-angle corner)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('Perpendicular',%d,%d))", uId, vId);
+
+            // TextAspectRatio: length(vLine) = baseAspect * length(uLine)
+            Gui::cmdAppObjectArgs(
+                getSketchObject(),
+                "addConstraint(Sketcher.Constraint('TextAspectRatio',%d,%d,%f))",
+                uId, vId, baseAspect);
 
             std::string escText = escapeForPython(text);
             std::string escFontPath = escapeForPython(font);
-            bool isHeight = constructionMethod() == ConstructionMethod::Height;
+            std::string escDirection = escapeForPython(direction);
             const char* constrBoolStr = isConstructionMode() ? "True" : "False";
-            const char* heightBoolStr = isHeight ? "True" : "False";
 
-            // Add the 'Text' Constraint (Empty)
-            // We initialize the constraint containing ONLY the handle (element 0).
-            // We do not add the text geometry manually to avoid floating-point precision loss
-            // associated with Python serialization.
+            // Text constraint — four frame elements, no isHeight (rectangle format signal)
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
-                "addConstraint(Sketcher.Constraint('Text', [%d, 0], '%s', '%s', %s))",
-                handleId,
+                "addConstraint(Sketcher.Constraint('Text',[%d,0,%d,1,%d,2,%d,3],'%s','%s'))",
+                uId, vId, l3Id, l4Id,
                 escText.c_str(),
-                escFontPath.c_str(),
-                heightBoolStr
+                escFontPath.c_str()
             );
 
-            // Generate Text Geometry by calling setTextAndFont on the new constraint.
-            // This triggers the C++ logic to generate the exact geometry and insert it
-            // into the sketch, ensuring closed wires and perfect precision.
+            // Generate glyphs; setTextAndFont detects rectangle format via absent isTextHeight
             Gui::cmdAppObjectArgs(
                 getSketchObject(),
-                "setTextAndFont(len(App.ActiveDocument.getObject('%s').Constraints)-1, '%s', '%s', "
-                "%s, %s)",
+                "setTextAndFont(len(App.ActiveDocument.getObject('%s').Constraints)-1,'%s','%s',"
+                "False,%s,'%s',%f)",
                 getSketchObject()->getNameInDocument(),
                 escText.c_str(),
                 escFontPath.c_str(),
-                heightBoolStr,
-                constrBoolStr
+                constrBoolStr,
+                escDirection.c_str(),
+                tracking
             );
 
             commitCommand();
@@ -272,8 +364,12 @@ private:
 
     std::string text;
     std::string font;
+    std::string direction;
+    double tracking;
     std::string cachedTextName;
     std::string cachedFontName;
+    std::string cachedDirectionName;
+    double cachedTracking;
     std::vector<TopoDS_Shape> cachedBaseShapes;
 
     void createShape(bool onlyeditoutline) override
@@ -288,12 +384,16 @@ private:
 
         // 1. Check if the cache is valid. If the user selected a new file,
         // or if the cache is empty, we need to re-load from the SVG.
-        if (cachedTextName != text || cachedFontName != font || cachedBaseShapes.empty()) {
+        if (cachedTextName != text || cachedFontName != font
+            || cachedDirectionName != direction || cachedTracking != tracking
+            || cachedBaseShapes.empty()) {
             if (!font.empty()) {
                 cachedTextName = text;
                 cachedFontName = font;
+                cachedDirectionName = direction;
+                cachedTracking = tracking;
                 // This is the one-time slow operation to get the template shapes.
-                cachedBaseShapes = Part::makeTextWires(text, font);
+                cachedBaseShapes = Part::makeTextWires(text, font, 1.0, tracking, direction);
             }
             else {
                 cachedBaseShapes.clear();
@@ -407,6 +507,29 @@ void DSHTextController::configureToolWidget()
                 }
             }
         }
+
+        // Direction combo
+        toolWidget->setComboboxLabel(
+            WCombobox::ThirdCombo,
+            QApplication::translate("TaskSketcherTool_Text", "Direction")
+        );
+        QStringList dirNames = {
+            QApplication::translate("TaskSketcherTool_Text", "Left to Right (LTR)"),
+            QApplication::translate("TaskSketcherTool_Text", "Right to Left (RTL)"),
+            QApplication::translate("TaskSketcherTool_Text", "Top to Bottom (TTB)"),
+            QApplication::translate("TaskSketcherTool_Text", "Bottom to Top (BTT)")
+        };
+        toolWidget->setComboboxElements(WCombobox::ThirdCombo, dirNames);
+
+        // Tracking spinner
+        toolWidget->setParameterLabel(
+            WParameter::First,
+            QApplication::translate("TaskSketcherTool_Text", "Tracking")
+        );
+        toolWidget->setParameter(WParameter::First, 0.0);
+        toolWidget->configureParameterMin(WParameter::First, -1000.0);  // NOLINT
+        toolWidget->configureParameterMax(WParameter::First, 1000.0);   // NOLINT
+        toolWidget->configureParameterDecimals(WParameter::First, 3);   // NOLINT
     }
 
     onViewParameters[OnViewParameter::First]->setLabelType(Gui::SoDatumLabel::DISTANCEX);
@@ -437,8 +560,7 @@ void DSHTextController::adaptDrawingToLineEditTextChange(int lineeditindex, cons
 }
 
 template<>
-void DSHTextController::adaptDrawingToComboboxChange(int comboboxindex, int value)
-{
+void DSHTextController::adaptDrawingToComboboxChange(int comboboxindex, int value){
     if (comboboxindex == WCombobox::FirstCombo) {
         handler->setConstructionMethod(static_cast<ConstructionMethod>(value));
     }
@@ -450,6 +572,20 @@ void DSHTextController::adaptDrawingToComboboxChange(int comboboxindex, int valu
             handler->font = handler->fontPathMap.value(fontName).toStdString();
         }
         // The redraw is handled by the controller's finishControlsChanged()
+    }
+    else if (comboboxindex == WCombobox::ThirdCombo) {
+        static const std::vector<std::string> dirKeys = {"ltr", "rtl", "ttb", "btt"};
+        if (value >= 0 && value < static_cast<int>(dirKeys.size())) {
+            handler->direction = dirKeys[value];
+        }
+    }
+}
+
+template<>
+void DSHTextController::adaptDrawingToParameterChange(int parameterindex, double value)
+{
+    if (parameterindex == WParameter::First) {
+        handler->tracking = value;
     }
 }
 

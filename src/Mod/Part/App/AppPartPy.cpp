@@ -87,6 +87,7 @@
 #include "BSplineSurfacePy.h"
 #include "edgecluster.h"
 #include "FaceMaker.h"
+#include "Geometry.h"
 #include "GeometryCurvePy.h"
 #include "GeometryPy.h"
 #include "ImportIges.h"
@@ -807,6 +808,17 @@ public:
             "joinSubname",
             &Module::joinSubname,
             "joinSubname(sub,mapped,subElement) -> subname\n"
+        );
+        add_varargs_method(
+            "makeTextWires",
+            &Module::makeTextWires,
+            "makeTextWires(text, fontFile, [height, tracking, direction]) -> list of shapes\n"
+            "Generate wire outlines for each glyph in text.\n\n"
+            "text: string to render\n"
+            "fontFile: absolute path to a TTF/OTF font file\n"
+            "height: cap-height in model units (default 1.0)\n"
+            "tracking: extra inter-glyph spacing in model units (default 0.0)\n"
+            "direction: 'ltr', 'rtl', 'ttb', or 'btt' (default 'ltr')"
         );
         initialize("This is a module working with shapes.");  // register with Python
 
@@ -2401,6 +2413,36 @@ private:
         throw Py::RuntimeError("FreeCAD compiled without FreeType support! This method is disabled...");
 #endif
     }
+
+    Py::Object makeTextWires(const Py::Tuple& args)
+    {
+#ifdef FCUseFreeType
+        const char* text = nullptr;
+        const char* fontFile = nullptr;
+        double height = 1.0;
+        double tracking = 0.0;
+        const char* direction = nullptr;
+
+        if (!PyArg_ParseTuple(args.ptr(), "ss|ddz", &text, &fontFile, &height, &tracking, &direction)) {
+            throw Py::Exception();
+        }
+
+        std::string textStr(text);
+        std::string fontStr(fontFile);
+        std::string dirStr = direction ? direction : "ltr";
+
+        std::vector<TopoDS_Shape> shapes = Part::makeTextWires(textStr, fontStr, height, tracking, dirStr);
+
+        Py::List list;
+        for (const TopoDS_Shape& s : shapes) {
+            list.append(Py::asObject(new TopoShapePy(new TopoShape(s))));
+        }
+        return list;
+#else
+        throw Py::RuntimeError("FreeCAD compiled without FreeType support! This method is disabled...");
+#endif
+    }
+
     Py::Object exportUnits(const Py::Tuple& args)
     {
         char* unit = nullptr;

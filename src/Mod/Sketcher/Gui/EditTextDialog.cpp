@@ -58,6 +58,23 @@ EditTextDialog::EditTextDialog(ViewProviderSketch* viewProvider, int constraintI
     ui->radioButton_height->setChecked(constraint->getIsTextHeight());
     ui->radioButton_width->setChecked(!constraint->getIsTextHeight());
 
+    // Initialize Direction (index 0=ltr, 1=rtl, 2=ttb, 3=btt)
+    std::string currentDir = constraint->getTextDirection();
+    int dirIndex = 0;
+    if (currentDir == "rtl") {
+        dirIndex = 1;
+    }
+    else if (currentDir == "ttb") {
+        dirIndex = 2;
+    }
+    else if (currentDir == "btt") {
+        dirIndex = 3;
+    }
+    ui->comboBox_direction->setCurrentIndex(dirIndex);
+
+    // Initialize Tracking
+    ui->doubleSpinBox_tracking->setValue(constraint->getTextTracking());
+
     // Initialize Font
     populateFontList();
     QString currentFontName = QString::fromStdString(constraint->getFont());
@@ -101,11 +118,26 @@ void EditTextDialog::on_buttonBox_accepted()
     std::string newFontPath = fontPathMap.value(selectedFontName).toStdString();
     bool newIsHeight = ui->radioButton_height->isChecked();
 
+    std::string newDirection = "ltr";
+    const int dirIdx = ui->comboBox_direction->currentIndex();
+    if (dirIdx == 1) {
+        newDirection = "rtl";
+    }
+    else if (dirIdx == 2) {
+        newDirection = "ttb";
+    }
+    else if (dirIdx == 3) {
+        newDirection = "btt";
+    }
+    double newTracking = ui->doubleSpinBox_tracking->value();
+
     const Sketcher::Constraint* constraint = sketch->Constraints[constrIndex];
 
     // Check if anything changed
     if (newText == constraint->getText() && selectedFontName.toStdString() == constraint->getFont()
-        && newIsHeight == constraint->getIsTextHeight()) {
+        && newIsHeight == constraint->getIsTextHeight()
+        && newDirection == constraint->getTextDirection()
+        && newTracking == constraint->getTextTracking()) {
         return;  // Nothing to do
     }
 
@@ -124,17 +156,20 @@ void EditTextDialog::on_buttonBox_accepted()
             );
         }
 
-        // Send the updated 5-parameter call to Python
+        // Send the updated call to Python
         std::string escText = escapeForPython(newText);
         std::string escFont = escapeForPython(newFontPath);
+        std::string escDirection = escapeForPython(newDirection);
         Gui::cmdAppObjectArgs(
             sketch,
-            "setTextAndFont(%i, '%s', '%s', %s, %s)",
+            "setTextAndFont(%i, '%s', '%s', %s, %s, '%s', %f)",
             constrIndex,
             escText.c_str(),
             escFont.c_str(),
             newIsHeight ? "True" : "False",
-            isConstruction ? "True" : "False"
+            isConstruction ? "True" : "False",
+            escDirection.c_str(),
+            newTracking
         );
 
         sketchView->getDocument()->commitCommand();
